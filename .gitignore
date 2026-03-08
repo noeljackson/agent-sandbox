@@ -36,3 +36,6 @@ hermes-sandbox-knowledge.md
 .ship
 .claude
 .vscode
+
+# Git worktrees
+.worktrees/
