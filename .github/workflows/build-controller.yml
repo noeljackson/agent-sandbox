@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ['v*']
     paths:
+      - '.github/workflows/build-controller.yml'
       - 'go.mod'
       - 'go.sum'
       - 'cmd/**'
