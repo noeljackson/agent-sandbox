@@ -12,6 +12,7 @@ FORK_BRANCH="desired-fork"
 
 # PR branches to merge into main. Update this list as PRs open/close.
 PR_BRANCHES=(
+  fix/dns-cluster-first  # Use ClusterFirst instead of DNSNone+hardcoded public resolvers
 )
 
 PUSH=false
