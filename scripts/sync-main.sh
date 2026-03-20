@@ -12,7 +12,6 @@ FORK_BRANCH="desired-fork"
 
 # PR branches to merge into main. Update this list as PRs open/close.
 PR_BRANCHES=(
-  "refactor/warmpool-sandbox-crs"  # PR #395 — warm pool Sandbox CRs
 )
 
 PUSH=false
