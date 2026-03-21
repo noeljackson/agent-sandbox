@@ -1015,13 +1015,15 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 					t.Errorf("expected template ref label to be removed from adopted sandbox")
 				}
 
-				// 2. Verify SandboxID label was added to pod template
-				expectedUID := string(types.UID("claim-uid"))
-				if val := adoptedSandbox.Spec.PodTemplate.ObjectMeta.Labels[extensionsv1alpha1.SandboxIDLabel]; val != expectedUID {
-					t.Errorf("expected pod template to have SandboxID label %q, got %q", expectedUID, val)
+				// 1b. Verify SandboxID label was added to sandbox and pod template
+				if val := adoptedSandbox.Labels[extensionsv1alpha1.SandboxIDLabel]; val != string(claim.UID) {
+					t.Errorf("expected adopted sandbox to have SandboxID label %q, got %q", claim.UID, val)
+				}
+				if val := adoptedSandbox.Spec.PodTemplate.ObjectMeta.Labels[extensionsv1alpha1.SandboxIDLabel]; val != string(claim.UID) {
+					t.Errorf("expected pod template to have SandboxID label %q, got %q", claim.UID, val)
 				}
 
-				// 3. Verify claim is the controller owner
+				// 2. Verify claim is the controller owner
 				controllerRef := metav1.GetControllerOf(&adoptedSandbox)
 				if controllerRef == nil || controllerRef.UID != claim.UID {
 					t.Errorf("expected adopted sandbox to be controlled by claim, got %v", controllerRef)
@@ -1033,6 +1035,12 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 				err = fakeClient.Get(ctx, req.NamespacedName, &sandbox)
 				if err != nil {
 					t.Fatalf("expected sandbox to be created but got error: %v", err)
+				}
+				if val := sandbox.Labels[extensionsv1alpha1.SandboxIDLabel]; val != string(claim.UID) {
+					t.Errorf("expected sandbox to have SandboxID label %q, got %q", claim.UID, val)
+				}
+				if val := sandbox.Spec.PodTemplate.ObjectMeta.Labels[extensionsv1alpha1.SandboxIDLabel]; val != string(claim.UID) {
+					t.Errorf("expected pod template to have SandboxID label %q, got %q", claim.UID, val)
 				}
 			}
 		})
