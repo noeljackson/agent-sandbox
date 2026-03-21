@@ -12,7 +12,8 @@ FORK_BRANCH="desired-fork"
 
 # PR branches to merge into main. Update this list as PRs open/close.
 PR_BRANCHES=(
-  fix/dns-cluster-first  # Use ClusterFirst instead of DNSNone+hardcoded public resolvers
+  fix/dns-cluster-first           # Use ClusterFirst instead of DNSNone+hardcoded public resolvers
+  pr/warm-pool-content-hash       # Template content hash for spec-drift detection in warm pools
 )
 
 PUSH=false
