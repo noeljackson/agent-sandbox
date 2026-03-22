@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	k8errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -348,6 +349,45 @@ func ensureClaimIdentityLabels(labels map[string]string, claim *extensionsv1alph
 	return labels
 }
 
+func applyWorkspaceResourceOverrides(container *corev1.Container, overrides *extensionsv1alpha1.WorkspaceResources) {
+	if overrides == nil {
+		return
+	}
+	if container.Resources.Requests == nil {
+		container.Resources.Requests = corev1.ResourceList{}
+	}
+	if container.Resources.Limits == nil {
+		container.Resources.Limits = corev1.ResourceList{}
+	}
+	if overrides.CPUMillicores > 0 {
+		qty := resource.MustParse(fmt.Sprintf("%dm", overrides.CPUMillicores))
+		container.Resources.Requests[corev1.ResourceCPU] = qty
+		container.Resources.Limits[corev1.ResourceCPU] = qty
+	}
+	if overrides.MemoryMB > 0 {
+		qty := resource.MustParse(fmt.Sprintf("%dMi", overrides.MemoryMB))
+		container.Resources.Requests[corev1.ResourceMemory] = qty
+		container.Resources.Limits[corev1.ResourceMemory] = qty
+	}
+	if overrides.DiskGB > 0 {
+		qty := resource.MustParse(fmt.Sprintf("%dGi", overrides.DiskGB))
+		container.Resources.Requests[corev1.ResourceEphemeralStorage] = qty
+		container.Resources.Limits[corev1.ResourceEphemeralStorage] = qty
+	}
+}
+
+func applyClaimWorkspaceResourcesToPodSpec(spec *corev1.PodSpec, claim *extensionsv1alpha1.SandboxClaim) {
+	if claim.Spec.WorkspaceResources == nil {
+		return
+	}
+	for i := range spec.Containers {
+		container := &spec.Containers[i]
+		if container.Name != "workspace" {
+			continue
+		}
+		applyWorkspaceResourceOverrides(container, claim.Spec.WorkspaceResources)
+	}
+}
 // adoptSandboxFromCandidates picks the best candidate and transfers ownership to the claim.
 func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context, claim *extensionsv1alpha1.SandboxClaim, candidates []*v1alpha1.Sandbox) (*v1alpha1.Sandbox, error) {
 	log := log.FromContext(ctx)
@@ -415,6 +455,7 @@ func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context,
 		adopted.Labels = ensureClaimIdentityLabels(adopted.Labels, claim)
 		adopted.Spec.PodTemplate.ObjectMeta.Labels = ensureClaimIdentityLabels(adopted.Spec.PodTemplate.ObjectMeta.Labels, claim)
 		adopted.Spec.PodTemplate.ObjectMeta.Labels[extensionsv1alpha1.SandboxIDLabel] = string(claim.UID)
+		applyClaimWorkspaceResourcesToPodSpec(&adopted.Spec.PodTemplate.Spec, claim)
 
 		// Update uses optimistic concurrency (resourceVersion) so concurrent
 		// claims racing to adopt the same sandbox will conflict and retry.
@@ -486,6 +527,7 @@ func (r *SandboxClaimReconciler) createSandbox(ctx context.Context, claim *exten
 	}
 
 	template.Spec.PodTemplate.DeepCopyInto(&sandbox.Spec.PodTemplate)
+	applyClaimWorkspaceResourcesToPodSpec(&sandbox.Spec.PodTemplate.Spec, claim)
 	// TODO: this is a workaround, remove replica assignment related issue #202
 	replicas := int32(1)
 	sandbox.Spec.Replicas = &replicas
