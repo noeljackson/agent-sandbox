@@ -12,8 +12,7 @@ FORK_BRANCH="desired-fork"
 
 # PR branches to merge into main. Update this list as PRs open/close.
 PR_BRANCHES=(
-  fix/dns-cluster-first           # Use ClusterFirst instead of DNSNone+hardcoded public resolvers
-  claim-identity-labels           # Propagate generic claim-name and claim-uid labels to Sandboxes and backing Pods
+  claim-identity-labels           # Propagate claim-uid label to Sandboxes and backing Pods
   pr/warm-pool-content-hash       # Template content hash for spec-drift detection in warm pools
   pr/workspace-resources-only     # Per-claim workspace container resource overrides
 )
