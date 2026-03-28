@@ -15,6 +15,7 @@ PR_BRANCHES=(
   claim-identity-labels           # Propagate claim-uid label to Sandboxes and backing Pods
   pr/warm-pool-content-hash       # Template content hash for spec-drift detection in warm pools
   pr/workspace-resources-only     # Per-claim workspace container resource overrides
+  pr/in-place-resize              # In-place resize of workspace resources on running sandboxes
 )
 
 PUSH=false
