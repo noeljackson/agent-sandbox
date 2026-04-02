@@ -27,11 +27,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	sandboxcontrollers "sigs.k8s.io/agent-sandbox/controllers"
@@ -159,6 +165,19 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 			}
 			continue
 		}
+
+		// Delete sandboxes whose pod is on a cordoned (unschedulable) node.
+		// The controller will recreate replacements on healthy nodes.
+		if onCordonedNode, nodeName := r.isSandboxOnCordonedNode(ctx, &sb); onCordonedNode {
+			log.Info("Deleting warm pool sandbox on cordoned node",
+				"sandbox", sb.Name, "node", nodeName)
+			if err := r.Delete(ctx, &sb); err != nil {
+				log.Error(err, "Failed to delete sandbox on cordoned node", "sandbox", sb.Name)
+				allErrors = errors.Join(allErrors, err)
+			}
+			continue
+		}
+
 		healthySandboxes = append(healthySandboxes, sb)
 	}
 	activeSandboxes = healthySandboxes
@@ -350,6 +369,34 @@ func (r *SandboxWarmPoolReconciler) updateStatus(ctx context.Context, oldStatus 
 	return nil
 }
 
+// isSandboxOnCordonedNode checks if a sandbox's pod is running on an
+// unschedulable (cordoned) node. Returns (true, nodeName) if so.
+func (r *SandboxWarmPoolReconciler) isSandboxOnCordonedNode(ctx context.Context, sb *sandboxv1alpha1.Sandbox) (bool, string) {
+	// Find the pod for this sandbox via the name-hash label.
+	nameHash := sandboxcontrollers.NameHash(sb.Name)
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList, &client.ListOptions{
+		Namespace: sb.Namespace,
+		LabelSelector: labels.SelectorFromSet(labels.Set{
+			"agents.x-k8s.io/sandbox-name-hash": nameHash,
+		}),
+	}); err != nil || len(podList.Items) == 0 {
+		return false, ""
+	}
+
+	nodeName := podList.Items[0].Spec.NodeName
+	if nodeName == "" {
+		return false, ""
+	}
+
+	node := &corev1.Node{}
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+		return false, ""
+	}
+
+	return node.Spec.Unschedulable, nodeName
+}
+
 func (r *SandboxWarmPoolReconciler) getTemplate(ctx context.Context, warmPool *extensionsv1alpha1.SandboxWarmPool) (*extensionsv1alpha1.SandboxTemplate, error) {
 	template := &extensionsv1alpha1.SandboxTemplate{
 		ObjectMeta: metav1.ObjectMeta{
@@ -372,6 +419,32 @@ func (r *SandboxWarmPoolReconciler) SetupWithManager(mgr ctrl.Manager, concurren
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&extensionsv1alpha1.SandboxWarmPool{}).
 		Owns(&sandboxv1alpha1.Sandbox{}).
+		// Watch Node cordon/uncordon events to evict warm pool sandboxes
+		// from unschedulable nodes immediately.
+		WatchesRawSource(source.Kind(mgr.GetCache(), &corev1.Node{},
+			handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, node *corev1.Node) []reconcile.Request {
+				// Re-reconcile all warm pools when a node's schedulability changes.
+				var pools extensionsv1alpha1.SandboxWarmPoolList
+				if err := r.List(ctx, &pools); err != nil {
+					return nil
+				}
+				requests := make([]reconcile.Request, 0, len(pools.Items))
+				for _, p := range pools.Items {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{Name: p.Name, Namespace: p.Namespace},
+					})
+				}
+				return requests
+			}),
+			predicate.TypedFuncs[*corev1.Node]{
+				UpdateFunc: func(e event.TypedUpdateEvent[*corev1.Node]) bool {
+					return e.ObjectOld.Spec.Unschedulable != e.ObjectNew.Spec.Unschedulable
+				},
+				CreateFunc:  func(event.TypedCreateEvent[*corev1.Node]) bool { return false },
+				DeleteFunc:  func(event.TypedDeleteEvent[*corev1.Node]) bool { return false },
+				GenericFunc: func(event.TypedGenericEvent[*corev1.Node]) bool { return false },
+			},
+		)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: concurrentWorkers}).
 		Complete(r)
 }

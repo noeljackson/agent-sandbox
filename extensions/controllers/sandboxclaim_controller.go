@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/labels"
 	k8errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -371,6 +372,39 @@ func (r *SandboxClaimReconciler) computeAndSetStatus(claim *extensionsv1alpha1.S
 // adoptSandboxFromCandidates picks the best candidate and transfers ownership to the claim.
 func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context, claim *extensionsv1alpha1.SandboxClaim, candidates []*v1alpha1.Sandbox) (*v1alpha1.Sandbox, error) {
 	logger := log.FromContext(ctx)
+
+	// Filter out candidates on cordoned (unschedulable) nodes.
+	var schedulableCandidates []*v1alpha1.Sandbox
+	for _, sb := range candidates {
+		nameHash := sandboxcontrollers.NameHash(sb.Name)
+		podList := &corev1.PodList{}
+		if err := r.List(ctx, podList, &client.ListOptions{
+			Namespace: sb.Namespace,
+			LabelSelector: labels.SelectorFromSet(labels.Set{
+				"agents.x-k8s.io/sandbox-name-hash": nameHash,
+			}),
+		}); err != nil || len(podList.Items) == 0 {
+			schedulableCandidates = append(schedulableCandidates, sb)
+			continue
+		}
+		nodeName := podList.Items[0].Spec.NodeName
+		if nodeName == "" {
+			schedulableCandidates = append(schedulableCandidates, sb)
+			continue
+		}
+		node := &corev1.Node{}
+		if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+			schedulableCandidates = append(schedulableCandidates, sb)
+			continue
+		}
+		if node.Spec.Unschedulable {
+			logger.Info("Skipping candidate on cordoned node",
+				"sandbox", sb.Name, "node", nodeName)
+			continue
+		}
+		schedulableCandidates = append(schedulableCandidates, sb)
+	}
+	candidates = schedulableCandidates
 
 	// Sort: ready sandboxes first, then by creation time (oldest first)
 	slices.SortFunc(candidates, func(a, b *v1alpha1.Sandbox) int {
