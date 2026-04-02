@@ -16,6 +16,7 @@ PR_BRANCHES=(
   pr/warm-pool-content-hash       # Template content hash for spec-drift detection in warm pools
   pr/workspace-resources-only     # Per-claim workspace container resource overrides + in-place resize
   pr/warm-pool-node-health        # Delete warm pool sandboxes on cordoned nodes, skip in claims
+  pr/podip-status                 # Add PodIP to Sandbox and SandboxClaim status (upstream #482)
 )
 
 PUSH=false
