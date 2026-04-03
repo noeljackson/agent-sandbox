@@ -1298,7 +1298,7 @@ func TestSandboxClaimAdoptionAppliesWorkspaceResources(t *testing.T) {
 				ObjectMeta: sandboxv1alpha1.PodMetadata{
 					Annotations: map[string]string{
 						"example.com/workspace": "true",
-						"test-annotation":          "template",
+						"test-annotation":       "template",
 					},
 				},
 				Spec: corev1.PodSpec{

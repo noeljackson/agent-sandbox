@@ -451,9 +451,6 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *sandboxv1
 		if pod.Labels == nil {
 			pod.Labels = make(map[string]string)
 		}
-		if pod.Annotations == nil {
-			pod.Annotations = make(map[string]string)
-		}
 		changed := false
 		if pod.Labels[sandboxLabel] != nameHash {
 			pod.Labels[sandboxLabel] = nameHash
@@ -463,12 +460,6 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *sandboxv1
 		for k, v := range sandbox.Spec.PodTemplate.ObjectMeta.Labels {
 			if pod.Labels[k] != v {
 				pod.Labels[k] = v
-				changed = true
-			}
-		}
-		for k, v := range sandbox.Spec.PodTemplate.ObjectMeta.Annotations {
-			if pod.Annotations[k] != v {
-				pod.Annotations[k] = v
 				changed = true
 			}
 		}
