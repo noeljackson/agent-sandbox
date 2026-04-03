@@ -621,6 +621,9 @@ func TestReconcilePod(t *testing.T) {
 						"agents.x-k8s.io/sandbox-name-hash": nameHash,
 						"custom-label":                      "label-val",
 					},
+					Annotations: map[string]string{
+						"custom-annotation": "anno-val",
+					},
 					OwnerReferences: []metav1.OwnerReference{sandboxControllerRef(sandboxName)},
 				},
 				Spec: corev1.PodSpec{
@@ -700,7 +703,7 @@ func TestReconcilePod(t *testing.T) {
 			wantPod: nil,
 		},
 		{
-			name: "adopts existing pod via annotation - pod gets label and owner reference",
+			name: "adopts existing pod via annotation - pod gets metadata and owner reference",
 			initialObjs: []runtime.Object{
 				&corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
@@ -732,6 +735,9 @@ func TestReconcilePod(t *testing.T) {
 							Labels: map[string]string{
 								extensionsv1alpha1.SandboxIDLabel: "claim-uid-1",
 							},
+							Annotations: map[string]string{
+								"example.com/workspace": "true",
+							},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
@@ -751,6 +757,9 @@ func TestReconcilePod(t *testing.T) {
 					Labels: map[string]string{
 						sandboxLabel:                      nameHash,
 						extensionsv1alpha1.SandboxIDLabel: "claim-uid-1",
+					},
+					Annotations: map[string]string{
+						"example.com/workspace": "true",
 					},
 					OwnerReferences: []metav1.OwnerReference{sandboxControllerRef(sandboxName)},
 				},
@@ -803,6 +812,9 @@ func TestReconcilePod(t *testing.T) {
 					Labels: map[string]string{
 						"agents.x-k8s.io/sandbox-name-hash": nameHash,
 						"custom-label":                      "label-val",
+					},
+					Annotations: map[string]string{
+						"custom-annotation": "anno-val",
 					},
 					// Should still have the original controller reference
 					OwnerReferences: []metav1.OwnerReference{
