@@ -108,6 +108,10 @@ spec:
                 properties:
                   name:
                     type: string
+                  podIPs:
+                    items:
+                      type: string
+                    type: array
                 type: object
             type: object
         required:
