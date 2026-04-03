@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	k8errors "k8s.io/apimachinery/pkg/api/errors"
@@ -934,16 +935,15 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 			expectNewSandboxCreated: false,
 		},
 		{
-			name: "adopts oldest non-ready sandbox when no ready sandboxes exist",
+			name: "skips not-ready sandboxes and falls through to cold creation",
 			existingObjects: []client.Object{
 				template,
 				claim,
 				createWarmPoolSandbox("not-ready-1", metav1.Time{Time: metav1.Now().Add(-2 * time.Hour)}, false),
 				createWarmPoolSandbox("not-ready-2", metav1.Time{Time: metav1.Now().Add(-1 * time.Hour)}, false),
 			},
-			expectSandboxAdoption:   true,
-			expectedAdoptedSandbox:  "not-ready-1",
-			expectNewSandboxCreated: false,
+			expectSandboxAdoption:   false,
+			expectNewSandboxCreated: true,
 		},
 		{
 			name: "retries on conflict when adopting sandbox",
@@ -1308,6 +1308,81 @@ func TestSandboxClaimCreationMetric(t *testing.T) {
 			t.Errorf("expected metric count 1, got %v", val)
 		}
 	})
+}
+
+func TestSandboxClaimSkipsNotReadyAdoptionCandidates(t *testing.T) {
+	scheme := newScheme(t)
+
+	template := &extensionsv1alpha1.SandboxTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-template", Namespace: "default"},
+		Spec: extensionsv1alpha1.SandboxTemplateSpec{
+			PodTemplate: sandboxv1alpha1.PodTemplate{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "workspace", Image: "img:v1"}},
+				},
+			},
+		},
+	}
+
+	claim := &extensionsv1alpha1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "skip-claim", Namespace: "default",
+			UID: "skip-claim-uid",
+		},
+		Spec: extensionsv1alpha1.SandboxClaimSpec{
+			TemplateRef: extensionsv1alpha1.SandboxTemplateRef{Name: "test-template"},
+		},
+	}
+
+	poolNameHash := sandboxcontrollers.NameHash("test-pool")
+
+	// Not-Ready sandbox: no Ready condition at all (pod being recreated during rotation)
+	notReadySandbox := &sandboxv1alpha1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "not-ready-sb", Namespace: "default",
+			CreationTimestamp: metav1.Now(),
+			Labels: map[string]string{
+				warmPoolSandboxLabel:   poolNameHash,
+				sandboxTemplateRefHash: sandboxcontrollers.NameHash("test-template"),
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "extensions.agents.x-k8s.io/v1alpha1", Kind: "SandboxWarmPool",
+				Name: "test-pool", UID: "wp-uid", Controller: ptr.To(true),
+			}},
+		},
+		Spec: sandboxv1alpha1.SandboxSpec{
+			Replicas: ptr.To(int32(1)),
+			PodTemplate: sandboxv1alpha1.PodTemplate{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "workspace", Image: "img:v1"}}},
+			},
+		},
+		// No Ready condition — simulates rotation state
+		Status: sandboxv1alpha1.SandboxStatus{},
+	}
+
+	reconciler := &SandboxClaimReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(template, claim, notReadySandbox).
+			WithStatusSubresource(claim).
+			Build(),
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+		Tracer:   asmetrics.NewNoOp(),
+	}
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: "skip-claim", Namespace: "default"}}
+	_, err := reconciler.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	// The not-ready sandbox should NOT have been adopted.
+	var sb sandboxv1alpha1.Sandbox
+	err = reconciler.Get(context.Background(), types.NamespacedName{Name: "not-ready-sb", Namespace: "default"}, &sb)
+	require.NoError(t, err)
+	controllerRef := metav1.GetControllerOf(&sb)
+	if controllerRef != nil && controllerRef.UID == claim.UID {
+		t.Fatal("not-ready sandbox should not have been adopted by claim")
+	}
 }
 
 func newScheme(t *testing.T) *runtime.Scheme {
