@@ -17,6 +17,7 @@ PR_BRANCHES=(
   pr/sandbox-pod-annotation-propagation  # #517 — Propagate podTemplate annotations to Pod
   pr/podip-status                        # PodIPs in Sandbox/SandboxClaim status (tracks upstream #482)
   pr/claim-skip-not-ready                # #519 — Skip not-ready sandboxes during warm pool adoption
+  pr/fix-stale-pod-annotation            # #521 — Clear stale pod-name annotation instead of hard error
 )
 
 PUSH=false
