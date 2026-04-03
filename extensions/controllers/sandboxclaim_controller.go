@@ -574,6 +574,12 @@ func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context,
 		currIndex := (startIndex + i) % n
 		adopted := candidates[currIndex]
 
+		if !isSandboxReady(adopted) {
+			logger.V(1).Info("skipping not-ready adoption candidate",
+				"sandbox", adopted.Name, "claim", claim.Name)
+			continue
+		}
+
 		// Extract pool name from owner reference before clearing
 		poolName := "none"
 		if controllerRef := metav1.GetControllerOf(adopted); controllerRef != nil {
