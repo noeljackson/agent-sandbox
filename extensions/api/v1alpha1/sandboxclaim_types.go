@@ -95,6 +95,21 @@ type SandboxTemplateRef struct {
 	Name string `json:"name,omitempty" protobuf:"bytes,1,name=name"`
 }
 
+// WorkspaceResources defines per-claim resource overrides for the workspace container.
+type WorkspaceResources struct {
+	// CPUMillicores is the desired CPU request/limit for the workspace container.
+	// +optional
+	CPUMillicores int32 `json:"cpuMillicores,omitempty"`
+
+	// MemoryMB is the desired memory request/limit for the workspace container.
+	// +optional
+	MemoryMB int32 `json:"memoryMB,omitempty"`
+
+	// DiskGB is the desired ephemeral-storage request/limit for the workspace container.
+	// +optional
+	DiskGB int32 `json:"diskGB,omitempty"`
+}
+
 // SandboxClaimSpec defines the desired state of Sandbox
 type SandboxClaimSpec struct {
 	// sandboxTemplateRef defines the name of the SandboxTemplate to be used for creating a Sandbox.
@@ -112,6 +127,10 @@ type SandboxClaimSpec struct {
 	// +optional
 	// +kubebuilder:default=default
 	WarmPool *WarmPoolPolicy `json:"warmpool,omitempty"`
+
+	// WorkspaceResources overrides resource requests/limits for the workspace container at claim time.
+	// +optional
+	WorkspaceResources *WorkspaceResources `json:"workspaceResources,omitempty"`
 }
 
 // SandboxClaimStatus defines the observed state of Sandbox.

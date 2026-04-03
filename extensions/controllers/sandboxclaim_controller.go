@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	k8errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -384,8 +385,154 @@ func ensureClaimIdentityLabels(labels map[string]string, claim *extensionsv1alph
 	return labels
 }
 
+func applyWorkspaceResourceOverrides(container *corev1.Container, overrides *extensionsv1alpha1.WorkspaceResources) {
+	if overrides == nil {
+		return
+	}
+	if container.Resources.Requests == nil {
+		container.Resources.Requests = corev1.ResourceList{}
+	}
+	if container.Resources.Limits == nil {
+		container.Resources.Limits = corev1.ResourceList{}
+	}
+	if overrides.CPUMillicores > 0 {
+		qty := *resource.NewMilliQuantity(int64(overrides.CPUMillicores), resource.DecimalSI)
+		container.Resources.Requests[corev1.ResourceCPU] = qty
+		container.Resources.Limits[corev1.ResourceCPU] = qty
+	}
+	if overrides.MemoryMB > 0 {
+		qty := *resource.NewQuantity(int64(overrides.MemoryMB)*1024*1024, resource.BinarySI)
+		container.Resources.Requests[corev1.ResourceMemory] = qty
+		container.Resources.Limits[corev1.ResourceMemory] = qty
+	}
+	if overrides.DiskGB > 0 {
+		qty := *resource.NewQuantity(int64(overrides.DiskGB)*1024*1024*1024, resource.BinarySI)
+		container.Resources.Requests[corev1.ResourceEphemeralStorage] = qty
+		container.Resources.Limits[corev1.ResourceEphemeralStorage] = qty
+	}
+}
+
+func applyClaimWorkspaceResourcesToPodSpec(spec *corev1.PodSpec, claim *extensionsv1alpha1.SandboxClaim) {
+	if claim.Spec.WorkspaceResources == nil {
+		return
+	}
+	for i := range spec.Containers {
+		container := &spec.Containers[i]
+		if container.Name != "workspace" {
+			continue
+		}
+		applyWorkspaceResourceOverrides(container, claim.Spec.WorkspaceResources)
+	}
+}
+
+// reconcileWorkspaceResources patches the pod's workspace container resources
+// in-place if the claim's WorkspaceResources differ from the pod's current values.
+// This triggers Kubernetes InPlacePodVerticalScaling (K8s 1.27+).
+func (r *SandboxClaimReconciler) reconcileWorkspaceResources(ctx context.Context, sandbox *v1alpha1.Sandbox, claim *extensionsv1alpha1.SandboxClaim) error {
+	if claim.Spec.WorkspaceResources == nil {
+		return nil
+	}
+	logger := log.FromContext(ctx)
+
+	// Find the pod owned by this sandbox.
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: sandbox.Namespace, Name: sandbox.Name}, pod); err != nil {
+		return nil // Pod may not exist yet (still starting).
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		return nil // Only resize running pods.
+	}
+
+	for i, c := range pod.Spec.Containers {
+		if c.Name != "workspace" {
+			continue
+		}
+		patch := buildResizePatch(c.Resources, claim.Spec.WorkspaceResources)
+		if patch == nil {
+			return nil // No change needed.
+		}
+
+		// Patch pod resources in-place. On K8s 1.27+ with InPlacePodVerticalScaling,
+		// the kubelet detects the resource change and calls UpdateContainerResources
+		// on the container runtime (e.g., isol8-runtime update).
+		podPatch := pod.DeepCopy()
+		podPatch.Spec.Containers[i].Resources = *patch
+		if err := r.Patch(ctx, podPatch, client.StrategicMergeFrom(pod)); err != nil {
+			return fmt.Errorf("patch pod resources: %w", err)
+		}
+		logger.Info("resized workspace container", "pod", pod.Name,
+			"cpuMillicores", claim.Spec.WorkspaceResources.CPUMillicores,
+			"memoryMB", claim.Spec.WorkspaceResources.MemoryMB)
+		return nil
+	}
+	return nil
+}
+
+// buildResizePatch compares current container resources with the desired
+// WorkspaceResources and returns updated ResourceRequirements if they differ.
+// Returns nil if no change is needed. DiskGB is intentionally excluded
+// because ephemeral storage cannot be resized in-place.
+func buildResizePatch(current corev1.ResourceRequirements, desired *extensionsv1alpha1.WorkspaceResources) *corev1.ResourceRequirements {
+	target := corev1.ResourceRequirements{
+		Requests: current.Requests.DeepCopy(),
+		Limits:   current.Limits.DeepCopy(),
+	}
+	if target.Requests == nil {
+		target.Requests = corev1.ResourceList{}
+	}
+	if target.Limits == nil {
+		target.Limits = corev1.ResourceList{}
+	}
+	changed := false
+
+	if desired.CPUMillicores > 0 {
+		qty := *resource.NewMilliQuantity(int64(desired.CPUMillicores), resource.DecimalSI)
+		if !current.Limits[corev1.ResourceCPU].Equal(qty) {
+			target.Requests[corev1.ResourceCPU] = qty
+			target.Limits[corev1.ResourceCPU] = qty
+			changed = true
+		}
+	}
+	if desired.MemoryMB > 0 {
+		qty := *resource.NewQuantity(int64(desired.MemoryMB)*1024*1024, resource.BinarySI)
+		if !current.Limits[corev1.ResourceMemory].Equal(qty) {
+			target.Requests[corev1.ResourceMemory] = qty
+			target.Limits[corev1.ResourceMemory] = qty
+			changed = true
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+	return &target
+}
+
+func mergeTemplatePodMetadata(target *v1alpha1.PodMetadata, template v1alpha1.PodMetadata) {
+	if len(template.Labels) > 0 {
+		if target.Labels == nil {
+			target.Labels = make(map[string]string, len(template.Labels))
+		}
+		for k, v := range template.Labels {
+			if _, exists := target.Labels[k]; !exists {
+				target.Labels[k] = v
+			}
+		}
+	}
+	if len(template.Annotations) > 0 {
+		if target.Annotations == nil {
+			target.Annotations = make(map[string]string, len(template.Annotations))
+		}
+		for k, v := range template.Annotations {
+			if _, exists := target.Annotations[k]; !exists {
+				target.Annotations[k] = v
+			}
+		}
+	}
+}
+
 // adoptSandboxFromCandidates picks the best candidate and transfers ownership to the claim.
-func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context, claim *extensionsv1alpha1.SandboxClaim, candidates []*v1alpha1.Sandbox) (*v1alpha1.Sandbox, error) {
+func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context, claim *extensionsv1alpha1.SandboxClaim, template *extensionsv1alpha1.SandboxTemplate, candidates []*v1alpha1.Sandbox) (*v1alpha1.Sandbox, error) {
 	logger := log.FromContext(ctx)
 
 	// Sort: ready sandboxes first, then by creation time (oldest first)
@@ -452,6 +599,12 @@ func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context,
 		// Propagate claim identity labels for discovery and NetworkPolicy targeting
 		adopted.Labels = ensureClaimIdentityLabels(adopted.Labels, claim)
 		adopted.Spec.PodTemplate.ObjectMeta.Labels = ensureClaimIdentityLabels(adopted.Spec.PodTemplate.ObjectMeta.Labels, claim)
+
+		if template != nil {
+			mergeTemplatePodMetadata(&adopted.Spec.PodTemplate.ObjectMeta, template.Spec.PodTemplate.ObjectMeta)
+		}
+
+		applyClaimWorkspaceResourcesToPodSpec(&adopted.Spec.PodTemplate.Spec, claim)
 
 		// Update uses optimistic concurrency (resourceVersion) so concurrent
 		// claims racing to adopt the same sandbox will conflict and retry.
@@ -526,6 +679,7 @@ func (r *SandboxClaimReconciler) createSandbox(ctx context.Context, claim *exten
 	sandbox.Annotations[v1alpha1.SandboxTemplateRefAnnotation] = template.Name
 
 	template.Spec.PodTemplate.DeepCopyInto(&sandbox.Spec.PodTemplate)
+	applyClaimWorkspaceResourcesToPodSpec(&sandbox.Spec.PodTemplate.Spec, claim)
 	// TODO: this is a workaround, remove replica assignment related issue #202
 	replicas := int32(1)
 	sandbox.Spec.Replicas = &replicas
@@ -608,11 +762,14 @@ func (r *SandboxClaimReconciler) getOrCreateSandbox(ctx context.Context, claim *
 	}
 
 	if sandbox != nil {
-		logger.Info("sandbox already exists, skipping update", "name", sandbox.Name)
 		if !metav1.IsControlledBy(sandbox, claim) {
 			err := fmt.Errorf("sandbox %q is not controlled by claim %q. Please use a different claim name or delete the sandbox manually", sandbox.Name, claim.Name)
 			logger.Error(err, "Sandbox controller mismatch")
 			return nil, err
+		}
+		// Reconcile workspace resources on the existing pod (in-place resize).
+		if err := r.reconcileWorkspaceResources(ctx, sandbox, claim); err != nil {
+			logger.Error(err, "failed to reconcile workspace resources")
 		}
 		return sandbox, nil
 	}
@@ -677,7 +834,12 @@ func (r *SandboxClaimReconciler) getOrCreateSandbox(ctx context.Context, claim *
 	// Try to adopt from warm pool
 	if len(adoptionCandidates) > 0 {
 		logger.V(1).Info("Found warm pool adoption candidates", "count", len(adoptionCandidates), "claim", claim.Name, "warmpool", policy)
-		adopted, err := r.adoptSandboxFromCandidates(ctx, claim, adoptionCandidates)
+		var template *extensionsv1alpha1.SandboxTemplate
+		template, err := r.getTemplate(ctx, claim)
+		if err != nil && !k8errors.IsNotFound(err) {
+			return nil, err
+		}
+		adopted, err := r.adoptSandboxFromCandidates(ctx, claim, template, adoptionCandidates)
 		if err != nil {
 			return nil, err
 		}
