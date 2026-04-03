@@ -12,12 +12,10 @@ FORK_BRANCH="desired-fork"
 
 # PR branches to merge into main. Update this list as PRs open/close.
 PR_BRANCHES=(
-  claim-identity-labels           # Propagate claim-uid label to Sandboxes and backing Pods
-  pr/warm-pool-content-hash       # Template content hash for spec-drift detection in warm pools
-  pr/workspace-resources-only     # Per-claim workspace container resource overrides + in-place resize
-  pr/warm-pool-node-health        # Delete warm pool sandboxes on cordoned nodes, skip in claims
-  pr/podip-status                 # Add PodIP to Sandbox and SandboxClaim status (upstream #482)
-  pr/warm-pool-template-watch     # Watch SandboxTemplate changes to auto-rotate warm pool pods
+  claim-identity-labels                  # #455 — Propagate claim-uid label to Sandboxes and backing Pods
+  pr/workspace-resources-only            # #459 — Per-claim workspace container resource overrides
+  pr/sandbox-pod-annotation-propagation  # #517 — Propagate podTemplate annotations to Pod
+  pr/podip-status                        # PodIPs in Sandbox/SandboxClaim status (tracks upstream #482)
 )
 
 PUSH=false
