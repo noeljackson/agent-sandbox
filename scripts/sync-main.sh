@@ -16,6 +16,7 @@ PR_BRANCHES=(
   pr/workspace-resources-only            # #459 — Per-claim workspace container resource overrides
   pr/sandbox-pod-annotation-propagation  # #517 — Propagate podTemplate annotations to Pod
   pr/podip-status                        # PodIPs in Sandbox/SandboxClaim status (tracks upstream #482)
+  pr/claim-skip-not-ready                # #519 — Skip not-ready sandboxes during warm pool adoption
 )
 
 PUSH=false
