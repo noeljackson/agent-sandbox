@@ -98,6 +98,10 @@ type SandboxTemplateSpec struct {
 	// +kubebuilder:default=Managed
 	// +optional
 	NetworkPolicyManagement NetworkPolicyManagement `json:"networkPolicyManagement,omitempty"`
+
+	// volumeClaimTemplates are PVC specs propagated to Sandboxes created from this template.
+	// +optional
+	VolumeClaimTemplates []sandboxv1alpha1.PersistentVolumeClaimTemplate `json:"volumeClaimTemplates,omitempty"`
 }
 
 // SandboxTemplateStatus defines the observed state of Sandbox.

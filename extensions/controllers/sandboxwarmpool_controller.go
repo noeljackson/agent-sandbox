@@ -287,6 +287,11 @@ func (r *SandboxWarmPoolReconciler) createPoolSandbox(ctx context.Context, warmP
 		},
 	}
 
+	// Propagate PVC templates from the SandboxTemplate to the Sandbox.
+	if len(template.Spec.VolumeClaimTemplates) > 0 {
+		sandbox.Spec.VolumeClaimTemplates = template.Spec.VolumeClaimTemplates
+	}
+
 	// Enforce a secure-by-default policy by disabling the automatic mounting
 	// of the service account token for warm pool sandboxes.
 	if sandbox.Spec.PodTemplate.Spec.AutomountServiceAccountToken == nil {

@@ -690,6 +690,10 @@ func (r *SandboxClaimReconciler) createSandbox(ctx context.Context, claim *exten
 
 	template.Spec.PodTemplate.DeepCopyInto(&sandbox.Spec.PodTemplate)
 	applyClaimWorkspaceResourcesToPodSpec(&sandbox.Spec.PodTemplate.Spec, claim)
+	// Propagate PVC templates from the SandboxTemplate to the Sandbox.
+	if len(template.Spec.VolumeClaimTemplates) > 0 {
+		sandbox.Spec.VolumeClaimTemplates = template.Spec.VolumeClaimTemplates
+	}
 	// TODO: this is a workaround, remove replica assignment related issue #202
 	replicas := int32(1)
 	sandbox.Spec.Replicas = &replicas
