@@ -29,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -57,7 +57,7 @@ func getWarmPoolPolicy(claim *extensionsv1alpha1.SandboxClaim) extensionsv1alpha
 type SandboxClaimReconciler struct {
 	client.Client
 	Scheme                  *runtime.Scheme
-	Recorder                record.EventRecorder
+	Recorder                events.EventRecorder
 	Tracer                  asmetrics.Instrumenter
 	MaxConcurrentReconciles int
 }
@@ -68,7 +68,7 @@ type SandboxClaimReconciler struct {
 //+kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=extensions.agents.x-k8s.io,resources=sandboxtemplates,verbs=get;list;watch
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
-//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //+kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -124,7 +124,7 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		policy := claim.Spec.Lifecycle.ShutdownPolicy
 		logger.Info("Deleting Claim because time has expired", "shutdownPolicy", policy, "claim", claim.Name)
 		if r.Recorder != nil {
-			r.Recorder.Event(claim, corev1.EventTypeNormal, extensionsv1alpha1.ClaimExpiredReason, fmt.Sprintf("Deleting Claim (ShutdownPolicy=%s)", policy))
+			r.Recorder.Eventf(claim, nil, corev1.EventTypeNormal, extensionsv1alpha1.ClaimExpiredReason, "Deleting", fmt.Sprintf("Deleting Claim (ShutdownPolicy=%s)", policy))
 		}
 
 		deleteOpts := []client.DeleteOption{}
@@ -156,7 +156,7 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if !hasExpiredCondition(originalClaimStatus.Conditions) && hasExpiredCondition(claim.Status.Conditions) {
 		if r.Recorder != nil {
-			r.Recorder.Event(claim, corev1.EventTypeNormal, extensionsv1alpha1.ClaimExpiredReason, "Claim expired")
+			r.Recorder.Eventf(claim, nil, corev1.EventTypeNormal, extensionsv1alpha1.ClaimExpiredReason, "Claim Expired", "Claim expired")
 		}
 	}
 
@@ -630,7 +630,7 @@ func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context,
 		logger.Info("Successfully adopted sandbox from warm pool", "sandbox", adopted.Name, "claim", claim.Name)
 
 		if r.Recorder != nil {
-			r.Recorder.Event(claim, corev1.EventTypeNormal, "SandboxAdopted", fmt.Sprintf("Adopted warm pool Sandbox %q", adopted.Name))
+			r.Recorder.Eventf(claim, nil, corev1.EventTypeNormal, "SandboxAdopted", "Adoption", "Adopted warm pool Sandbox %q", adopted.Name)
 		}
 
 		podCondition := "not_ready"
@@ -734,7 +734,7 @@ func (r *SandboxClaimReconciler) createSandbox(ctx context.Context, claim *exten
 	logger.Info("Created sandbox for claim", "claim", claim.Name, "sandbox", sandbox.Name, "isReady", false, "duration", time.Since(claim.CreationTimestamp.Time))
 
 	if r.Recorder != nil {
-		r.Recorder.Event(claim, corev1.EventTypeNormal, "SandboxProvisioned", fmt.Sprintf("Created Sandbox %q", sandbox.Name))
+		r.Recorder.Eventf(claim, nil, corev1.EventTypeNormal, "SandboxProvisioned", "Provisioning", "Created Sandbox %q", sandbox.Name)
 	}
 
 	asmetrics.RecordSandboxClaimCreation(claim.Namespace, claim.Spec.TemplateRef.Name, asmetrics.LaunchTypeCold, "none", "not_ready")
