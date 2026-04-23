@@ -11,14 +11,29 @@ ORIGIN_REMOTE="origin"
 FORK_BRANCH="desired-fork"
 
 # PR branches to merge into main. Update this list as PRs open/close.
+#
+# CHANGELOG of this list (relative to the previous version that had 7 entries):
+#
+# REMOVED (superseded upstream):
+#   pr/sandbox-pod-annotation-propagation  # #517 — superseded by upstream #514 (KEP-0174, strict superset with deletion tracking + domain validation at claim layer)
+#   pr/podip-status                        # upstream #482 closed without merge but equivalent feature landed via upstream #518
+#   pr/fix-stale-pod-annotation            # #521 — superseded by upstream #613 (strict superset with clearPodNameAnnotation helper)
+#
+# ADDED (new fork-only patch):
+#   pr/warmpool-requeue-after              # New fork-only: RequeueAfter 10s so warm pool replenishes after adoption ownership transfer
+#
+# Kept unchanged: claim-identity-labels (#455), pr/workspace-resources-only (#459),
+# pr/claim-skip-not-ready (#519), pr/template-volume-claim-templates.
+#
+# NOTE: pr/warm-adoption-preserve-podtemplate-metadata was never in PR_BRANCHES;
+# its content was bundled into pr/workspace-resources-only (commit fa34c14) and
+# is now dropped during that branch's rebase because KEP-0174 supersedes it.
 PR_BRANCHES=(
-  claim-identity-labels                  # #455 — Propagate claim-uid label to Sandboxes and backing Pods
-  pr/workspace-resources-only            # #459 — Per-claim workspace container resource overrides
-  pr/sandbox-pod-annotation-propagation  # #517 — Propagate podTemplate annotations to Pod
-  pr/podip-status                        # PodIPs in Sandbox/SandboxClaim status (tracks upstream #482)
-  pr/claim-skip-not-ready                # #519 — Skip not-ready sandboxes during warm pool adoption
-  pr/fix-stale-pod-annotation            # #521 — Clear stale pod-name annotation instead of hard error
-  pr/template-volume-claim-templates     # PVC workspace persistence via VolumeClaimTemplates
+  claim-identity-labels              # #455 — Propagate SandboxIDLabel (claim-uid) to Sandbox.metadata.labels AND Pod labels (KEP-0174 only covers pod labels, not top-level Sandbox labels; load-bearing for platform informer)
+  pr/workspace-resources-only        # #459 — Per-claim workspace container resource overrides + in-place resize on running sandboxes
+  pr/claim-skip-not-ready            # #519 — Skip not-ready sandboxes during warm pool adoption (now implemented in verifySandboxCandidate after upstream queue refactor)
+  pr/template-volume-claim-templates # Propagate VolumeClaimTemplates from SandboxTemplate to Sandbox for PVC workspace persistence (fork-only, no upstream PR)
+  pr/warmpool-requeue-after          # Warm pool replenishment after adoption: return RequeueAfter 10s so owner-ref change is not missed (fork-only, no upstream PR)
 )
 
 PUSH=false
