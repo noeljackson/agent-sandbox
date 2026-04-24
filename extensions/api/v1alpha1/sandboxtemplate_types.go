@@ -30,6 +30,10 @@ type NetworkPolicyManagement string
 // EnvVarsInjectionPolicy defines whether a SandboxClaim is allowed to inject or override environment variables.
 type EnvVarsInjectionPolicy string
 
+// WarmPoolAdoptionStrategy selects which warm-pool sandbox a SandboxClaim adopts
+// when multiple adoptable candidates are available.
+type WarmPoolAdoptionStrategy string
+
 const (
 	// SandboxIDLabel is the label key applied to the Pod to identify the owning Claim UID.
 	// The SandboxClaim controller injects this label into the Pod
@@ -53,6 +57,11 @@ const (
 
 	// EnvVarsInjectionPolicyDisallowed prevents a SandboxClaim from injecting any environment variables.
 	EnvVarsInjectionPolicyDisallowed EnvVarsInjectionPolicy = "Disallowed"
+
+	// WarmPoolAdoptionStrategyOldestReady adopts the oldest adoptable warm-pool
+	// candidate for a template (the current default behavior, implemented via
+	// the warm pool sandbox queue's FIFO insertion order).
+	WarmPoolAdoptionStrategyOldestReady WarmPoolAdoptionStrategy = "OldestReady"
 )
 
 // NetworkPolicySpec defines the desired state of the NetworkPolicy.
@@ -117,6 +126,16 @@ type SandboxTemplateSpec struct {
 	// +kubebuilder:default=Disallowed
 	// +optional
 	EnvVarsInjectionPolicy EnvVarsInjectionPolicy `json:"envVarsInjectionPolicy,omitempty"`
+
+	// adoptionStrategy selects which adoptable warm-pool candidate a SandboxClaim
+	// adopts when multiple are available for this template. See sig-apps discussion
+	// in kubernetes-sigs/agent-sandbox#491 for motivation. Currently only
+	// "OldestReady" is implemented; additional strategies (e.g. NodeSpread,
+	// topology-aware) are expected as follow-ups.
+	// +kubebuilder:validation:Enum=OldestReady
+	// +kubebuilder:default=OldestReady
+	// +optional
+	AdoptionStrategy WarmPoolAdoptionStrategy `json:"adoptionStrategy,omitempty"`
 }
 
 // SandboxTemplateStatus defines the observed state of Sandbox.

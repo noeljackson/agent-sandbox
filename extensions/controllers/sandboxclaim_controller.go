@@ -1268,6 +1268,18 @@ func isAdoptable(candidate *v1alpha1.Sandbox) error {
 	if controllerRef != nil && controllerRef.Kind != "SandboxWarmPool" {
 		return fmt.Errorf("sandbox is not managed by warm pool. Controller: %v", controllerRef)
 	}
+
+	// A sandbox with no backing Pod is not useful to adopt: the claim would take
+	// ownership and then immediately fail reconcilePod with "Pod not found". This
+	// happens during warm pool rotation, when the sandbox is still in the queue
+	// but its pod has been deleted and not yet recreated. PodIPs is populated
+	// only when the pod has been scheduled and networked, so it's a reliable
+	// proxy for "pod exists and is usable". A not-Ready-yet pod with IPs is
+	// still adoptable — the claim will just wait the same amount for Ready as
+	// it would on a cold start, without the rotation-induced ReconcilerError.
+	if len(candidate.Status.PodIPs) == 0 {
+		return fmt.Errorf("sandbox has no backing pod yet (Status.PodIPs is empty)")
+	}
 	return nil
 }
 

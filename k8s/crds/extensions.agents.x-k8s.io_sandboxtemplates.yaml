@@ -28,6 +28,11 @@ spec:
             type: object
           spec:
             properties:
+              adoptionStrategy:
+                default: OldestReady
+                enum:
+                - OldestReady
+                type: string
               envVarsInjectionPolicy:
                 default: Disallowed
                 enum:

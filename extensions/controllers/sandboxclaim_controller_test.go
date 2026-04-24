@@ -1239,6 +1239,10 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 						Reason: "DependenciesReady",
 					},
 				},
+				// PodIPs populated regardless of Ready state: the backing Pod exists
+				// and has been networked. isAdoptable requires this to avoid adopting
+				// a sandbox whose pod has been deleted during warm-pool rotation.
+				PodIPs: []string{"10.244.0.5"},
 			},
 		}
 	}
@@ -1284,6 +1288,15 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 		now := metav1.Now()
 		sb.DeletionTimestamp = &now
 		sb.Finalizers = []string{"test-finalizer"}
+		return sb
+	}
+
+	// createRotatingSandbox simulates a warm-pool sandbox whose backing Pod has
+	// been deleted (e.g. during template-spec rotation) but whose Sandbox CR is
+	// still in the queue. PodIPs is cleared and Ready=False — the rotation gap.
+	createRotatingSandbox := func(name string, creationTime metav1.Time) *sandboxv1alpha1.Sandbox {
+		sb := createWarmPoolSandbox(name, creationTime, false)
+		sb.Status.PodIPs = nil
 		return sb
 	}
 
@@ -1376,6 +1389,38 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 			},
 			expectSandboxAdoption:   true,
 			expectedAdoptedSandbox:  "not-ready-1",
+			expectNewSandboxCreated: false,
+		},
+		{
+			// Regression test for the rotation hang that motivated issue #491
+			// discussion: a warm-pool sandbox is still in the queue but its
+			// backing Pod has been deleted (PodIPs empty). Adopting it would
+			// leave the claim stuck with ReconcilerError.
+			name: "skips warm pool sandbox with no backing pod and falls through to cold creation",
+			existingObjects: []client.Object{
+				template,
+				claim,
+				createRotatingSandbox("rotating-sb-1", metav1.Time{Time: metav1.Now().Add(-2 * time.Hour)}),
+				createRotatingSandbox("rotating-sb-2", metav1.Time{Time: metav1.Now().Add(-1 * time.Hour)}),
+			},
+			expectSandboxAdoption:   false,
+			expectNewSandboxCreated: true,
+		},
+		{
+			// Mixed pool: some sandboxes are mid-rotation (no pod) and some have
+			// pods but haven't gone Ready yet. The ones with pods should still
+			// be adopted rather than falling to cold creation. This is the
+			// aditya-shantanu correction: a pod-started-but-not-ready sandbox
+			// is more useful than a from-scratch cold start.
+			name: "adopts not-ready sandbox with backing pod, skipping rotating sandboxes without pods",
+			existingObjects: []client.Object{
+				template,
+				claim,
+				createRotatingSandbox("rotating-sb", metav1.Time{Time: metav1.Now().Add(-2 * time.Hour)}),
+				createWarmPoolSandbox("not-ready-with-pod", metav1.Time{Time: metav1.Now().Add(-1 * time.Hour)}, false),
+			},
+			expectSandboxAdoption:   true,
+			expectedAdoptedSandbox:  "not-ready-with-pod",
 			expectNewSandboxCreated: false,
 		},
 		{
@@ -1928,6 +1973,7 @@ func TestSandboxClaimCreationMetric(t *testing.T) {
 				Conditions: []metav1.Condition{{
 					Type: string(sandboxv1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue, Reason: "Ready",
 				}},
+				PodIPs: []string{"10.244.0.5"},
 			},
 		}
 
@@ -2076,6 +2122,7 @@ func TestSandboxClaimWarmPoolPolicy(t *testing.T) {
 						Reason: "DependenciesReady",
 					},
 				},
+				PodIPs: []string{"10.244.0.5"},
 			},
 		}
 	}
