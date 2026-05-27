@@ -34,6 +34,7 @@ PR_BRANCHES=(
   pr/claim-skip-not-ready-v2         # #683 — Skip warm-pool sandboxes without a backing pod (reopens #519 with isAdoptable PodIPs check; rebased onto v1beta1 API)
   pr/template-volume-claim-templates # Propagate VolumeClaimTemplates from SandboxTemplate to Sandbox for PVC workspace persistence (fork-only, no upstream PR)
   pr/warmpool-requeue-after          # Warm pool replenishment after adoption: return RequeueAfter 10s so owner-ref change is not missed (fork-only, no upstream PR)
+  pr/fake-newclientset               # Add applyconfig-backed fake clientsets with NewClientset for SSA-friendly tests (fork-only; upstream #695 covers production clientset but not test fakes)
 )
 
 PUSH=false
