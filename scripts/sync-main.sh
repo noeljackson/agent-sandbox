@@ -22,14 +22,13 @@ FORK_BRANCH="desired-fork"
 # ADDED (new fork-only patch):
 #   pr/warmpool-requeue-after              # New fork-only: RequeueAfter 10s so warm pool replenishes after adoption ownership transfer
 #
-# Kept unchanged: claim-identity-labels (#455), pr/workspace-resources-only (#459),
+# Kept unchanged: pr/workspace-resources-only (#459),
 # pr/claim-skip-not-ready-v2 (#683, replaces closed #519), pr/template-volume-claim-templates.
 #
 # NOTE: pr/warm-adoption-preserve-podtemplate-metadata was never in PR_BRANCHES;
 # its content was bundled into pr/workspace-resources-only (commit fa34c14) and
 # is now dropped during that branch's rebase because KEP-0174 supersedes it.
 PR_BRANCHES=(
-  claim-identity-labels              # #455 — Propagate SandboxIDLabel (claim-uid) to Sandbox.metadata.labels AND Pod labels (KEP-0174 only covers pod labels, not top-level Sandbox labels; load-bearing for platform informer)
   pr/workspace-resources-only        # #459 — Per-claim workspace container resource overrides + in-place resize on running sandboxes
   pr/claim-skip-not-ready-v2         # #683 — Skip warm-pool sandboxes without a backing pod (reopens #519 with isAdoptable PodIPs check; rebased onto v1beta1 API)
   pr/template-volume-claim-templates # Propagate VolumeClaimTemplates from SandboxTemplate to Sandbox for PVC workspace persistence (fork-only, no upstream PR)
