@@ -23,15 +23,17 @@ FORK_BRANCH="desired-fork"
 #   pr/warmpool-requeue-after              # New fork-only: RequeueAfter 10s so warm pool replenishes after adoption ownership transfer
 #
 # Kept unchanged: pr/workspace-resources-only (#459),
-# pr/claim-skip-not-ready-v2 (#683, replaces closed #519), pr/template-volume-claim-templates.
+# pr/claim-skip-not-ready-v2 (#683, replaces closed #519).
 #
 # NOTE: pr/warm-adoption-preserve-podtemplate-metadata was never in PR_BRANCHES;
 # its content was bundled into pr/workspace-resources-only (commit fa34c14) and
 # is now dropped during that branch's rebase because KEP-0174 supersedes it.
+#
+# NOTE: pr/template-volume-claim-templates is no longer listed because its
+# content is already an ancestor of upstream/main as of the 2026-06-26 sync.
 PR_BRANCHES=(
   pr/workspace-resources-only        # #459 — Per-claim workspace container resource overrides + in-place resize on running sandboxes
   pr/claim-skip-not-ready-v2         # #683 — Skip warm-pool sandboxes without a backing pod (reopens #519 with isAdoptable PodIPs check; rebased onto v1beta1 API)
-  pr/template-volume-claim-templates # Propagate VolumeClaimTemplates from SandboxTemplate to Sandbox for PVC workspace persistence (fork-only, no upstream PR)
   pr/warmpool-requeue-after          # Warm pool replenishment after adoption: return RequeueAfter 10s so owner-ref change is not missed (fork-only, no upstream PR)
   pr/fake-newclientset               # Add applyconfig-backed fake clientsets with NewClientset for SSA-friendly tests (fork-only; upstream #695 covers production clientset but not test fakes)
 )
