@@ -68,7 +68,8 @@ Environment:
   TARGET_BRANCH         Default: main
   FORK_OVERLAY_BRANCH   Default: fork-overlay
   LEGACY_FORK_BRANCH    Default: desired-fork
-  WORKTREE_DIR          Optional default for --worktree
+  WORKTREE_DIR          Optional default for --worktree. By default this script
+                        creates an ignored worktree under .worktrees/.
 EOF
 }
 
@@ -159,7 +160,8 @@ done
 TMP_PARENT=""
 WORKTREE_CREATED=false
 if [[ -z "$WORKTREE_DIR" ]]; then
-  TMP_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-sync.XXXXXX")"
+  mkdir -p "${REPO_ROOT}/.worktrees"
+  TMP_PARENT="$(mktemp -d "${REPO_ROOT}/.worktrees/sync-main.XXXXXX")"
   WORKTREE_DIR="${TMP_PARENT}/worktree"
 elif [[ -e "$WORKTREE_DIR" ]]; then
   die "--worktree path already exists: ${WORKTREE_DIR}"
