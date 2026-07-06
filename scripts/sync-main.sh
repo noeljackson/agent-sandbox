@@ -206,8 +206,8 @@ if $VERIFY; then
   run_check git -C "$WORKTREE_DIR" diff --check "${UPSTREAM_REF}..HEAD"
   run_check git -C "$WORKTREE_DIR" diff --quiet
   run_check go -C "$WORKTREE_DIR" test ./extensions/... -count=1
-  run_check make -C "$WORKTREE_DIR" lint-api
-  run_check make -C "$WORKTREE_DIR" lint-go
+  run_check env GOLANGCI_LINT_CACHE="${WORKTREE_DIR}/dev/tools/tmp/golangci-lint-cache" make -C "$WORKTREE_DIR" lint-api
+  run_check env GOLANGCI_LINT_CACHE="${WORKTREE_DIR}/dev/tools/tmp/golangci-lint-cache" make -C "$WORKTREE_DIR" lint-go
   run_check make -C "$WORKTREE_DIR" build
 else
   echo "==> Verification skipped."
