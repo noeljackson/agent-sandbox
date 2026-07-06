@@ -49,6 +49,7 @@ VERIFY=true
 KEEP_WORKTREE=false
 ALLOW_DIRTY=false
 WORKTREE_DIR="${WORKTREE_DIR:-}"
+SYNC_WORKTREE_BASE="${SYNC_WORKTREE_BASE:-}"
 
 usage() {
   cat <<EOF
@@ -68,8 +69,8 @@ Environment:
   TARGET_BRANCH         Default: main
   FORK_OVERLAY_BRANCH   Default: fork-overlay
   LEGACY_FORK_BRANCH    Default: desired-fork
-  WORKTREE_DIR          Optional default for --worktree. By default this script
-                        creates an ignored worktree under .worktrees/.
+  WORKTREE_DIR          Optional default for --worktree.
+  SYNC_WORKTREE_BASE    Default: ../.agent-sandbox-sync outside this repo
 EOF
 }
 
@@ -124,6 +125,9 @@ done
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 UPSTREAM_REF="${UPSTREAM_REMOTE}/${TARGET_BRANCH}"
 TARGET_REMOTE_REF="refs/heads/${TARGET_BRANCH}"
+if [[ -z "$SYNC_WORKTREE_BASE" ]]; then
+  SYNC_WORKTREE_BASE="$(dirname "$REPO_ROOT")/.agent-sandbox-sync"
+fi
 
 if ! $ALLOW_DIRTY; then
   git -C "$REPO_ROOT" diff --quiet || die "worktree has unstaged changes; commit/stash them or pass --allow-dirty"
@@ -160,8 +164,8 @@ done
 TMP_PARENT=""
 WORKTREE_CREATED=false
 if [[ -z "$WORKTREE_DIR" ]]; then
-  mkdir -p "${REPO_ROOT}/.worktrees"
-  TMP_PARENT="$(mktemp -d "${REPO_ROOT}/.worktrees/sync-main.XXXXXX")"
+  mkdir -p "$SYNC_WORKTREE_BASE"
+  TMP_PARENT="$(mktemp -d "${SYNC_WORKTREE_BASE}/sync-main.XXXXXX")"
   WORKTREE_DIR="${TMP_PARENT}/worktree"
 elif [[ -e "$WORKTREE_DIR" ]]; then
   die "--worktree path already exists: ${WORKTREE_DIR}"
