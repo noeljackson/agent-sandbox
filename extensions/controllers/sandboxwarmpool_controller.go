@@ -99,7 +99,10 @@ func (r *SandboxWarmPoolReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	// Requeue periodically so the pool replenishes even when watch events
+	// are missed (e.g. after a claim adopts a sandbox and changes the owner
+	// ref, the old owner's Owns() handler is not notified).
+	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
 // reconcilePool ensures the correct number of pre-allocated sandboxes exist in the pool.
