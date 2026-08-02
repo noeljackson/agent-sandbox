@@ -45,3 +45,6 @@ hermes-sandbox-knowledge.md
 .build-kwok/
 kwok-cl2-report/
 .DS_Store
+
+# Git worktrees
+.worktrees/
