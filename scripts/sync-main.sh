@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 set -euo pipefail
 
 # Rebuild the mirror main branch from upstream + fork overlay + PR branches.
@@ -14,34 +28,12 @@ UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 ORIGIN_REMOTE="${ORIGIN_REMOTE:-origin}"
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
 FORK_OVERLAY_BRANCH="${FORK_OVERLAY_BRANCH:-fork-overlay}"
-LEGACY_FORK_BRANCH="${LEGACY_FORK_BRANCH:-desired-fork}"
 
 # PR branches to merge into main. Update this list as PRs open/close.
-#
-# CHANGELOG of this list (relative to the previous version that had 7 entries):
-#
-# REMOVED (superseded upstream):
-#   pr/sandbox-pod-annotation-propagation  # #517: superseded by upstream #514 (KEP-0174, strict superset with deletion tracking + domain validation at claim layer)
-#   pr/podip-status                        # upstream #482 closed without merge but equivalent feature landed via upstream #518
-#   pr/fix-stale-pod-annotation            # #521: superseded by upstream #613 (strict superset with clearPodNameAnnotation helper)
-#
-# ADDED (new fork-only patch):
-#   pr/warmpool-requeue-after              # New fork-only: RequeueAfter 10s so warm pool replenishes after adoption ownership transfer
-#
-# Kept unchanged: pr/workspace-resources-only (#459),
-# pr/claim-skip-not-ready-v2 (#683, replaces closed #519).
-#
-# NOTE: pr/warm-adoption-preserve-podtemplate-metadata was never in PR_BRANCHES;
-# its content was bundled into pr/workspace-resources-only (commit fa34c14) and
-# is now dropped during that branch's rebase because KEP-0174 supersedes it.
-#
-# NOTE: pr/template-volume-claim-templates is no longer listed because its
-# content is already an ancestor of upstream/main as of the 2026-06-26 sync.
 PR_BRANCHES=(
+  pr/claim-skip-not-ready-v2         # #683: Briefly wait for rotating warm-pool candidates to report PodIPs
   pr/workspace-resources-only        # #459: Per-claim workspace container resource overrides + in-place resize on running sandboxes
-  pr/claim-skip-not-ready-v2         # #683: Skip warm-pool sandboxes without a backing pod (reopens #519 with isAdoptable PodIPs check; rebased onto v1beta1 API)
-  pr/warmpool-requeue-after          # Warm pool replenishment after adoption: return RequeueAfter 10s so owner-ref change is not missed (fork-only, no upstream PR)
-  pr/fake-newclientset               # Add applyconfig-backed fake clientsets with NewClientset for SSA-friendly tests (fork-only; upstream #695 covers production clientset but not test fakes)
+  pr/fake-newclientset               # #795: Add applyconfig-backed fake clientsets with NewClientset
 )
 
 PUSH=false
@@ -68,7 +60,6 @@ Environment:
   ORIGIN_REMOTE         Default: origin
   TARGET_BRANCH         Default: main
   FORK_OVERLAY_BRANCH   Default: fork-overlay
-  LEGACY_FORK_BRANCH    Default: desired-fork
   WORKTREE_DIR          Optional default for --worktree.
   SYNC_WORKTREE_BASE    Default: ../.agent-sandbox-sync outside this repo
 EOF
@@ -148,12 +139,7 @@ require_ref "$UPSTREAM_REF"
 
 OVERLAY_REF="${ORIGIN_REMOTE}/${FORK_OVERLAY_BRANCH}"
 OVERLAY_NAME="$FORK_OVERLAY_BRANCH"
-if ! git -C "$REPO_ROOT" rev-parse --verify --quiet "${OVERLAY_REF}^{commit}" >/dev/null; then
-  OVERLAY_REF="${ORIGIN_REMOTE}/${LEGACY_FORK_BRANCH}"
-  OVERLAY_NAME="$LEGACY_FORK_BRANCH"
-  require_ref "$OVERLAY_REF"
-  echo "warning: ${ORIGIN_REMOTE}/${FORK_OVERLAY_BRANCH} not found; using legacy ${OVERLAY_REF}" >&2
-fi
+require_ref "$OVERLAY_REF"
 
 for raw_branch in "${PR_BRANCHES[@]}"; do
   branch="$(trim "${raw_branch%%#*}")"
@@ -201,14 +187,47 @@ for raw_branch in "${PR_BRANCHES[@]}"; do
   git -C "$WORKTREE_DIR" merge --no-ff "$branch_ref" -m "Merge branch '${branch}'"
 done
 
+GENERATED_PATHS=(
+  api/v1alpha1/zz_generated.deepcopy.go
+  api/v1beta1/zz_generated.deepcopy.go
+  extensions/api/v1alpha1/zz_generated.deepcopy.go
+  extensions/api/v1beta1/zz_generated.deepcopy.go
+  clients/k8s
+  k8s/crds
+  k8s/rbac.generated.yaml
+  k8s/extensions-rbac.generated.yaml
+  helm/crds
+  helm/templates/rbac.generated.yaml
+  helm/templates/extensions-rbac.generated.yaml
+)
+
+mkdir -p "${WORKTREE_DIR}/dev/tools/tmp"
+
+echo "==> Regenerating composed API and client artifacts..."
+run_check env TMPDIR="${WORKTREE_DIR}/dev/tools/tmp" make -C "$WORKTREE_DIR" fix-go-generate
+git -C "$WORKTREE_DIR" add -- "${GENERATED_PATHS[@]}"
+git -C "$WORKTREE_DIR" diff --quiet ||
+  die "generation changed tracked files outside the generator-owned path allowlist"
+if ! git -C "$WORKTREE_DIR" diff --cached --quiet; then
+  run_check git -C "$WORKTREE_DIR" diff --cached --check
+  git -C "$WORKTREE_DIR" commit -m "chore: regenerate composed API and client artifacts"
+fi
+
+echo "==> Verifying generation is stable..."
+run_check env TMPDIR="${WORKTREE_DIR}/dev/tools/tmp" make -C "$WORKTREE_DIR" fix-go-generate
+git -C "$WORKTREE_DIR" diff --quiet || die "generation is not stable after the integration commit"
+
 if $VERIFY; then
   echo "==> Verifying generated ${TARGET_BRANCH}..."
   run_check git -C "$WORKTREE_DIR" diff --check "${UPSTREAM_REF}..HEAD"
   run_check git -C "$WORKTREE_DIR" diff --quiet
-  run_check go -C "$WORKTREE_DIR" test ./extensions/... -count=1
   run_check env GOLANGCI_LINT_CACHE="${WORKTREE_DIR}/dev/tools/tmp/golangci-lint-cache" make -C "$WORKTREE_DIR" lint-api
   run_check env GOLANGCI_LINT_CACHE="${WORKTREE_DIR}/dev/tools/tmp/golangci-lint-cache" make -C "$WORKTREE_DIR" lint-go
   run_check make -C "$WORKTREE_DIR" build
+  run_check env TMPDIR="${WORKTREE_DIR}/dev/tools/tmp" make -C "$WORKTREE_DIR" test-unit
+  run_check env TMPDIR="${WORKTREE_DIR}/dev/tools/tmp" make -C "$WORKTREE_DIR" toc-verify
+  run_check env TMPDIR="${WORKTREE_DIR}/dev/tools/tmp" make -C "$WORKTREE_DIR" verify-olm
+  run_check env TMPDIR="${WORKTREE_DIR}/dev/tools/tmp" "${WORKTREE_DIR}/dev/tools/lint-olm"
 else
   echo "==> Verification skipped."
 fi
