@@ -2834,6 +2834,14 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         namedType: io.k8s.sigs.agent-sandbox.extensions.api.v1beta1.SandboxWarmPoolRef
       default: {}
+    - name: workspaceResources
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.agent-sandbox.extensions.api.v1beta1.WorkspaceResourceOverride
+          elementRelationship: associative
+          keys:
+          - containerName
 - name: io.k8s.sigs.agent-sandbox.extensions.api.v1beta1.SandboxClaimStatus
   map:
     fields:
@@ -2970,6 +2978,17 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: type
       type:
         scalar: string
+- name: io.k8s.sigs.agent-sandbox.extensions.api.v1beta1.WorkspaceResourceOverride
+  map:
+    fields:
+    - name: containerName
+      type:
+        scalar: string
+      default: ""
+    - name: resources
+      type:
+        namedType: ResourceRequirements.v1.core.api.k8s.io
+      default: {}
 - name: __untyped_atomic_
   scalar: untyped
   list:
