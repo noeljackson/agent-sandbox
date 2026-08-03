@@ -42,6 +42,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1alpha1.PodMetadataApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodTemplate"):
 		return &apiv1alpha1.PodTemplateApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ResourceResizePolicy"):
+		return &apiv1alpha1.ResourceResizePolicyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Sandbox"):
 		return &apiv1alpha1.SandboxApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("SandboxSpec"):
@@ -60,6 +62,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1beta1.PodMetadataApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("PodTemplate"):
 		return &apiv1beta1.PodTemplateApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("ResourceResizePolicy"):
+		return &apiv1beta1.ResourceResizePolicyApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("Sandbox"):
 		return &apiv1beta1.SandboxApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("SandboxBlueprint"):

@@ -43,6 +43,10 @@ type SandboxSpecApplyConfiguration struct {
 	// compatibility but does not create new ones. Set to true to enable or false
 	// to explicitly disable and remove the Service.
 	Service *bool `json:"service,omitempty"`
+	// resourceResizePolicy controls CPU and memory reconciliation for an
+	// already-running backing Pod. Disabled is the safe default: the
+	// controller never replaces a Pod in response to resource changes.
+	ResourceResizePolicy *ResourceResizePolicyApplyConfiguration `json:"resourceResizePolicy,omitempty"`
 }
 
 // SandboxSpecApplyConfiguration constructs a declarative configuration of the SandboxSpec type for use with
@@ -101,5 +105,13 @@ func (b *SandboxSpecApplyConfiguration) WithReplicas(value int32) *SandboxSpecAp
 // If called multiple times, the Service field is set to the value of the last call.
 func (b *SandboxSpecApplyConfiguration) WithService(value bool) *SandboxSpecApplyConfiguration {
 	b.Service = &value
+	return b
+}
+
+// WithResourceResizePolicy sets the ResourceResizePolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ResourceResizePolicy field is set to the value of the last call.
+func (b *SandboxSpecApplyConfiguration) WithResourceResizePolicy(value *ResourceResizePolicyApplyConfiguration) *SandboxSpecApplyConfiguration {
+	b.ResourceResizePolicy = value
 	return b
 }
