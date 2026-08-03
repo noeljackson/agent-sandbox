@@ -2417,6 +2417,13 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         namedType: PodSpec.v1.core.api.k8s.io
       default: {}
+- name: io.k8s.sigs.agent-sandbox.api.v1alpha1.ResourceResizePolicy
+  map:
+    fields:
+    - name: type
+      type:
+        scalar: string
+      default: ""
 - name: io.k8s.sigs.agent-sandbox.api.v1alpha1.Sandbox
   map:
     fields:
@@ -2448,6 +2455,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: replicas
       type:
         scalar: numeric
+    - name: resourceResizePolicy
+      type:
+        namedType: io.k8s.sigs.agent-sandbox.api.v1alpha1.ResourceResizePolicy
     - name: service
       type:
         scalar: boolean
@@ -2541,6 +2551,13 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         namedType: PodSpec.v1.core.api.k8s.io
       default: {}
+- name: io.k8s.sigs.agent-sandbox.api.v1beta1.ResourceResizePolicy
+  map:
+    fields:
+    - name: type
+      type:
+        scalar: string
+      default: ""
 - name: io.k8s.sigs.agent-sandbox.api.v1beta1.Sandbox
   map:
     fields:
@@ -2572,6 +2589,9 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         namedType: io.k8s.sigs.agent-sandbox.api.v1beta1.PodTemplate
       default: {}
+    - name: resourceResizePolicy
+      type:
+        namedType: io.k8s.sigs.agent-sandbox.api.v1beta1.ResourceResizePolicy
     - name: service
       type:
         scalar: boolean
