@@ -800,6 +800,9 @@ func (r *SandboxClaimReconciler) computeReadyCondition(claim *extensionsv1beta1.
 	// Forward the condition from Sandbox Status
 	for _, condition := range sandbox.Status.Conditions {
 		if condition.Type == string(v1beta1.SandboxConditionReady) {
+			if pending, ok := sandboxUpdatePendingCondition(claim, sandbox, condition); ok {
+				return pending
+			}
 			return condition
 		}
 	}
@@ -811,6 +814,40 @@ func (r *SandboxClaimReconciler) computeReadyCondition(claim *extensionsv1beta1.
 		Message:            "Sandbox is not ready",
 		ObservedGeneration: claim.Generation,
 	}
+}
+
+// ClaimReasonSandboxUpdatePending is the claim Ready reason while the Sandbox
+// reports Ready for an older generation than its current spec. After a warm
+// adoption this is the window in which the backing Pod does not yet carry the
+// claim's identity labels and additionalPodMetadata.
+const ClaimReasonSandboxUpdatePending = "SandboxUpdatePending"
+
+// sandboxUpdatePendingCondition withholds claim readiness until the Sandbox
+// controller has applied the Sandbox's current generation to the backing Pod.
+//
+// Adoption (and any later additionalPodMetadata sync) writes the claim's
+// identity labels and additionalPodMetadata into the Sandbox's PodTemplate,
+// which bumps metadata.generation. The Pod itself is only relabeled when the
+// Sandbox controller next reconciles: it patches the Pod's metadata and only
+// then publishes a Ready condition stamped with that generation. A failed Pod
+// patch publishes Ready=False instead. The warm Sandbox's previous
+// Ready=True condition still carries the pre-adoption generation, so
+// forwarding it would report the claim Ready while the Pod still lacks the
+// claim's identity. Gating on the Ready condition's observedGeneration makes
+// claim Ready imply that the Pod carries the claim's current metadata, so
+// existing consumers of claim Ready need no change.
+func sandboxUpdatePendingCondition(claim *extensionsv1beta1.SandboxClaim, sandbox *v1beta1.Sandbox, ready metav1.Condition) (metav1.Condition, bool) {
+	if ready.Status != metav1.ConditionTrue || ready.ObservedGeneration >= sandbox.Generation {
+		return metav1.Condition{}, false
+	}
+	return metav1.Condition{
+		Type:   string(v1beta1.SandboxConditionReady),
+		Status: metav1.ConditionFalse,
+		Reason: ClaimReasonSandboxUpdatePending,
+		Message: fmt.Sprintf("Sandbox generation %d, which carries this claim's Pod metadata, is not yet applied to the backing Pod (Sandbox Ready observed generation %d)",
+			sandbox.Generation, ready.ObservedGeneration),
+		ObservedGeneration: claim.Generation,
+	}, true
 }
 
 func (r *SandboxClaimReconciler) computeAndSetStatus(claim *extensionsv1beta1.SandboxClaim, sandbox *v1beta1.Sandbox, err error, isClaimExpired bool) {
@@ -876,6 +913,8 @@ func (r *SandboxClaimReconciler) getCandidate(ctx context.Context, claim *extens
 	var fallbackKey queue.SandboxKey
 	var adoptingFallback bool
 	var pendingNetworkCandidates int
+	// Resolved on the first candidate so an empty queue costs no lookup.
+	var revision *poolRevision
 
 	// Instantly returns unused keys the moment we find a valid/ready candidate!
 	defer func() {
@@ -965,7 +1004,21 @@ func (r *SandboxClaimReconciler) getCandidate(ctx context.Context, claim *extens
 			return nil, queue.SandboxKey{}, pendingNetworkCandidates, err
 		}
 
-		if err := verifySandboxCandidate(adopted, claim); err != nil {
+		if revision == nil {
+			revision, err = r.currentPoolRevision(ctx, claim)
+			if err != nil {
+				r.WarmSandboxQueue.Add(namespacedWarmPoolName, adoptedKey)
+				return nil, queue.SandboxKey{}, pendingNetworkCandidates, err
+			}
+		}
+
+		if err := verifySandboxCandidate(ctx, adopted, claim, revision); err != nil {
+			if errors.Is(err, errStaleRevision) {
+				// Dropped from the queue for good: stale members are never
+				// handed out, and the warm pool controller replaces them.
+				logger.Info("Skipping stale warm pool sandbox", "sandbox", adopted.Name, "warmPool", claim.Spec.WarmPoolRef.Name, "claim", claim.Name, "reason", err.Error())
+				continue
+			}
 			logger.V(1).Info("sandbox candidate can't be adopted", "sandbox", adopted.Name, "warmPool", claim.Spec.WarmPoolRef.Name, "reason", err.Error())
 			// If it is a good sandbox in the wrong namespace, put it back.
 			// (Though pickSmart makes this impossible, we keep it for safety).
@@ -1319,6 +1372,7 @@ func (r *SandboxClaimReconciler) resolveAdoptionCompletion(ctx context.Context, 
 	reader := r.authoritativeReader()
 	key := client.ObjectKey{Namespace: claim.Namespace, Name: sandboxName}
 	var resolved *v1beta1.Sandbox
+	var revision *poolRevision
 	attempt := func() error {
 		fresh := &v1beta1.Sandbox{}
 		if err := reader.Get(ctx, key, fresh); err != nil {
@@ -1332,7 +1386,13 @@ func (r *SandboxClaimReconciler) resolveAdoptionCompletion(ctx context.Context, 
 		if !utils.MatchesGroupKind(metav1.GetControllerOf(fresh), extensionsv1beta1.GroupVersion.Group, extensionsv1beta1.SandboxWarmPoolKind) {
 			return fmt.Errorf("%w: sandbox %s is no longer pool-owned and not controlled by claim %s", errAdoptionConflict, sandboxName, claim.Name)
 		}
-		if err := verifySandboxCandidate(fresh, claim); err != nil {
+		if revision == nil {
+			var err error
+			if revision, err = r.currentPoolRevision(ctx, claim); err != nil {
+				return err
+			}
+		}
+		if err := verifySandboxCandidate(ctx, fresh, claim, revision); err != nil {
 			return fmt.Errorf("%w: sandbox %s is no longer adoptable by claim %s: %s", errAdoptionConflict, sandboxName, claim.Name, err.Error())
 		}
 		// Still pool-owned and adoptable: re-patch on the fresh base; a
@@ -1917,7 +1977,11 @@ func (r *SandboxClaimReconciler) getOrCreateSandbox(ctx context.Context, claim *
 			if utils.MatchesGroupKind(controllerRef, extensionsv1beta1.GroupVersion.Group, extensionsv1beta1.SandboxWarmPoolKind) {
 				// Still in warm pool. Try to complete adoption!
 				logger.Info("Sandbox found in claim metadata still in warm pool, trying to complete adoption", "sandbox", sbName, "claim", claim.Name)
-				if err := verifySandboxCandidate(sandbox, claim); err != nil {
+				revision, err := r.currentPoolRevision(ctx, claim)
+				if err != nil {
+					return nil, err
+				}
+				if err := verifySandboxCandidate(ctx, sandbox, claim, revision); err != nil {
 					logger.Info("Sandbox recorded in claim metadata cannot be adopted, removing stale reference", "sandboxName", sbName, "fromLabel", fromLabel, "claim", claim.Name, "reason", err.Error())
 					patch := client.MergeFrom(claim.DeepCopy())
 					if fromLabel {
@@ -2208,7 +2272,9 @@ func (r *SandboxClaimReconciler) mapWarmPoolToClaims(ctx context.Context, obj cl
 // hasSandboxExpiredCondition reads the Ready condition's Reason ==
 // SandboxReasonExpired — so expiry propagates to claims only because we DeepEqual
 // the entire Ready condition. Narrowing this to a Status-only compare would
-// silently stop expiry from reaching claims.
+// silently stop expiry from reaching claims. Claim readiness likewise depends
+// on the Ready condition's observedGeneration (sandboxUpdatePendingCondition):
+// after an adoption the only wake-up is the Sandbox controller advancing it.
 //
 // Invariant: this predicate deliberately drops all metadata- and spec-only
 // updates on owned Sandboxes (labels, annotations, generation). Nothing in the
@@ -2668,7 +2734,42 @@ func applyClaimWorkspaceResourcesToPodSpec(spec *corev1.PodSpec, claim *extensio
 	return nil
 }
 
-func verifySandboxCandidate(candidate *v1beta1.Sandbox, claim *extensionsv1beta1.SandboxClaim) error {
+// errStaleRevision marks a warm pool member built from a template revision
+// other than the pool's current one. Such members are never handed out.
+var errStaleRevision = errors.New("warm pool sandbox does not match the pool's current template revision")
+
+// poolRevision is the warm pool's current template revision, resolved once
+// per adoption attempt. A claim adopts only members that match it: under the
+// default OnReplenish strategy a pool may still hold members built from an
+// older template (or from a template the pool no longer references), and
+// handing one out would give the claim an environment that no longer
+// reflects the current template. The warm pool controller replaces stale
+// members under every strategy, using the same isSandboxStale predicate.
+type poolRevision struct {
+	template      *extensionsv1beta1.SandboxTemplate
+	blueprintHash string
+	vettedHashes  map[string]bool
+}
+
+// currentPoolRevision resolves the claim's warm pool template and its
+// blueprint hash. Failing to resolve it fails closed: without a revision no
+// member can be verified, so none is adopted.
+func (r *SandboxClaimReconciler) currentPoolRevision(ctx context.Context, claim *extensionsv1beta1.SandboxClaim) (*poolRevision, error) {
+	template, err := r.getTemplate(ctx, claim)
+	if err != nil {
+		return nil, err
+	}
+	hash, err := computeSandboxBlueprintHash(template)
+	if err != nil {
+		return nil, fmt.Errorf("computing current revision of warm pool %q: %w", claim.Spec.WarmPoolRef.Name, err)
+	}
+	return &poolRevision{template: template, blueprintHash: hash, vettedHashes: make(map[string]bool)}, nil
+}
+
+// verifySandboxCandidate checks that candidate is a pool-owned member of the
+// claim's warm pool, in the claim's namespace, built from the pool's current
+// template revision.
+func verifySandboxCandidate(ctx context.Context, candidate *v1beta1.Sandbox, claim *extensionsv1beta1.SandboxClaim, revision *poolRevision) error {
 	if candidate.Namespace != claim.Namespace {
 		return fmt.Errorf("%w: sandbox is in %q, claim is in %q", ErrCrossNamespaceAdoption, candidate.Namespace, claim.Namespace)
 	}
@@ -2680,6 +2781,14 @@ func verifySandboxCandidate(candidate *v1beta1.Sandbox, claim *extensionsv1beta1
 	warmPoolName := getWarmPoolName(candidate)
 	if warmPoolName == "" || warmPoolName != claim.Spec.WarmPoolRef.Name {
 		return fmt.Errorf("incorrect warm pool, expected %v", claim.Spec.WarmPoolRef.Name)
+	}
+
+	if revision == nil {
+		return fmt.Errorf("%w: current revision unknown", errStaleRevision)
+	}
+	if isSandboxStale(ctx, candidate, revision.template, revision.blueprintHash, revision.vettedHashes) {
+		return fmt.Errorf("%w: sandbox revision %q, current template %q revision %q", errStaleRevision,
+			candidate.Labels[v1beta1.SandboxTemplateHashLabel], revision.template.Name, revision.blueprintHash)
 	}
 	return nil
 }

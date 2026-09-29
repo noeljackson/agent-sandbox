@@ -56,7 +56,8 @@ const (
 	// RecreateSandboxWarmPoolUpdateStrategyType indicates that stale pods are deleted immediately to ensure the pool only contains fresh pods.
 	// Note: This applies to PodTemplate spec changes only. Changes to annotations or labels in the template do not trigger recreate.
 	RecreateSandboxWarmPoolUpdateStrategyType SandboxWarmPoolUpdateStrategyType = "Recreate"
-	// OnReplenishSandboxWarmPoolUpdateStrategyType indicates that stale pods are only replaced when they are manually deleted or when these stale pods are adopted by sandboxclaims and hence replaced by fresh pods.
+	// OnReplenishSandboxWarmPoolUpdateStrategyType is kept for compatibility and replaces stale sandboxes like Recreate.
+	// SandboxClaims never adopt a stale sandbox, so waiting for adoption to replenish it would strand it in the pool.
 	OnReplenishSandboxWarmPoolUpdateStrategyType SandboxWarmPoolUpdateStrategyType = "OnReplenish"
 )
 

@@ -67,8 +67,9 @@ func TestWarmPoolPodExclusivity(t *testing.T) {
 				Namespace:         "default",
 				CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
 				Labels: map[string]string{
-					warmPoolSandboxLabel:   poolNameHash,
-					sandboxTemplateRefHash: templateHash,
+					warmPoolSandboxLabel:                    poolNameHash,
+					sandboxTemplateRefHash:                  templateHash,
+					sandboxv1beta1.SandboxTemplateHashLabel: currentRevision(template),
 				},
 				OwnerReferences: []metav1.OwnerReference{{
 					APIVersion: extensionsv1beta1.GroupVersion.String(),

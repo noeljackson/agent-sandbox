@@ -963,25 +963,24 @@ func TestReconcilePool_TemplateUpdateRollout(t *testing.T) {
 	templateName := "test-template"
 	replicas := int32(2)
 
+	// Claims never adopt a member built from an older template revision, so
+	// every strategy replaces stale members: under OnReplenish (the default)
+	// a stale member would otherwise hold a replica slot no claim can use.
 	testCases := []struct {
-		name                 string
-		strategy             extensionsv1beta1.SandboxWarmPoolUpdateStrategyType
-		expectedUpdatedImage bool
+		name     string
+		strategy extensionsv1beta1.SandboxWarmPoolUpdateStrategyType
 	}{
 		{
-			name:                 "Recreate strategy updates all pod images immediately",
-			strategy:             extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType,
-			expectedUpdatedImage: true,
+			name:     "Recreate strategy replaces stale sandboxes immediately",
+			strategy: extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType,
 		},
 		{
-			name:                 "OnReplenish strategy retains original pod images until manual deletion",
-			strategy:             extensionsv1beta1.OnReplenishSandboxWarmPoolUpdateStrategyType,
-			expectedUpdatedImage: false,
+			name:     "OnReplenish strategy replaces stale sandboxes because claims never adopt them",
+			strategy: extensionsv1beta1.OnReplenishSandboxWarmPoolUpdateStrategyType,
 		},
 		{
-			name:                 "Default strategy (empty string) behaves like OnReplenish and does not update all immediately",
-			strategy:             "",
-			expectedUpdatedImage: false,
+			name:     "Default strategy (empty string) replaces stale sandboxes",
+			strategy: "",
 		},
 	}
 
@@ -1066,11 +1065,10 @@ func TestReconcilePool_TemplateUpdateRollout(t *testing.T) {
 			require.NoError(t, err)
 			require.NotEqual(t, initialHash, updatedHash, "Hashes should differ after template update")
 
-			// Reconcile again to trigger rollout (or lack thereof). Under the
-			// Recreate strategy the first pass deletes the stale sandboxes;
-			// the replacements are created on the next pass, after the
-			// deletions have been observed (create gating counts terminating
-			// sandboxes against the target, #1215).
+			// Reconcile again to trigger the rollout. The first pass deletes
+			// the stale sandboxes; the replacements are created on the next
+			// pass, after the deletions have been observed (create gating
+			// counts terminating sandboxes against the target, #1215).
 			_, err = r.reconcilePool(ctx, warmPool)
 			require.NoError(t, err)
 			syncPoolExpectations(&r, warmPool)
@@ -1082,51 +1080,9 @@ func TestReconcilePool_TemplateUpdateRollout(t *testing.T) {
 			err = r.List(ctx, sandboxes, client.InNamespace(poolNamespace))
 			require.NoError(t, err)
 			require.Len(t, sandboxes.Items, int(replicas))
-
-			if tc.expectedUpdatedImage {
-				// For Recreate strategy, all should be updated
-				for _, sb := range sandboxes.Items {
-					require.Equal(t, "image-v2", sb.Spec.PodTemplate.Spec.Containers[0].Image, "Sandbox should have updated image")
-					require.Equal(t, updatedHash, sb.Labels[sandboxv1beta1.SandboxTemplateHashLabel], "Sandbox should have updated sandbox blueprint hash label")
-				}
-				t.Log("Verified: All sandboxes updated immediately with Recreate strategy")
-			} else {
-				// For OnReplenish (default), all should still be v1
-				for _, sb := range sandboxes.Items {
-					require.Equal(t, "image-v1", sb.Spec.PodTemplate.Spec.Containers[0].Image, "Sandbox should retain original image")
-					require.Equal(t, initialHash, sb.Labels[sandboxv1beta1.SandboxTemplateHashLabel], "Sandbox should retain original sandbox blueprint hash label")
-				}
-				t.Log("Verified: Sandboxes retained original image after update with OnReplenish strategy")
-
-				// Now manually delete one sandbox to test replenishment
-				sbToDelete := &sandboxes.Items[0]
-				err = r.Delete(ctx, sbToDelete)
-				require.NoError(t, err)
-
-				// Reconcile to trigger replenishment
-				_, err = r.reconcilePool(ctx, warmPool)
-				require.NoError(t, err)
-				syncPoolExpectations(&r, warmPool)
-
-				// Verify that we have 2 sandboxes: one old (v1) and one new (v2)
-				err = r.List(ctx, sandboxes, client.InNamespace(poolNamespace))
-				require.NoError(t, err)
-				require.Len(t, sandboxes.Items, int(replicas))
-
-				v1Count, v2Count := 0, 0
-				for _, sb := range sandboxes.Items {
-					switch sb.Spec.PodTemplate.Spec.Containers[0].Image {
-					case "image-v1":
-						v1Count++
-						require.Equal(t, initialHash, sb.Labels[sandboxv1beta1.SandboxTemplateHashLabel])
-					case "image-v2":
-						v2Count++
-						require.Equal(t, updatedHash, sb.Labels[sandboxv1beta1.SandboxTemplateHashLabel])
-					}
-				}
-				require.Equal(t, 1, v1Count, "Should have one remaining v1 sandbox")
-				require.Equal(t, 1, v2Count, "Should have one newly created v2 sandbox")
-				t.Log("Verified: New sandbox picking up updated template during replenishment in OnReplenish mode")
+			for _, sb := range sandboxes.Items {
+				require.Equal(t, "image-v2", sb.Spec.PodTemplate.Spec.Containers[0].Image, "Sandbox should have updated image")
+				require.Equal(t, updatedHash, sb.Labels[sandboxv1beta1.SandboxTemplateHashLabel], "Sandbox should have updated sandbox blueprint hash label")
 			}
 		})
 	}
@@ -1366,8 +1322,6 @@ func TestComparePodSpecsNormalization(t *testing.T) {
 		},
 	}
 
-	r := &SandboxWarmPoolReconciler{}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			template := &extensionsv1beta1.SandboxTemplate{
@@ -1390,7 +1344,7 @@ func TestComparePodSpecsNormalization(t *testing.T) {
 				ApplySandboxSecureDefaults(template, actualSpecCopy)
 			}
 
-			result := r.comparePodSpecs(template, actualSpecCopy)
+			result := comparePodSpecs(template, actualSpecCopy)
 			if result != tt.expectedResult {
 				t.Errorf("comparePodSpecs() = %v, want %v", result, tt.expectedResult)
 			}
@@ -1490,7 +1444,6 @@ func TestIsSandboxStale_OrphanedSandboxVetting(t *testing.T) {
 	poolNamespace := "default"
 	templateName := "test-template"
 	ctx := context.Background()
-	scheme := newTestScheme()
 
 	template := &extensionsv1beta1.SandboxTemplate{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1511,7 +1464,6 @@ func TestIsSandboxStale_OrphanedSandboxVetting(t *testing.T) {
 	require.NoError(t, err)
 	templateRefHash := SandboxTemplateRefHash(template.Name)
 
-	r := &SandboxWarmPoolReconciler{Scheme: scheme}
 	vettedHashes := make(map[string]bool)
 
 	// Case 1: Orphaned sandbox with matching hash label but modified PodSpec (Spoofed).
@@ -1532,7 +1484,7 @@ func TestIsSandboxStale_OrphanedSandboxVetting(t *testing.T) {
 		Spec: sandboxv1beta1.SandboxSpec{SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{PodTemplate: sandboxv1beta1.PodTemplate{Spec: *spoofedSpec}}},
 	}
 
-	isStaleSpoofed := r.isSandboxStale(ctx, spoofedOrphan, template, currentSandboxBlueprintHash, vettedHashes)
+	isStaleSpoofed := isSandboxStale(ctx, spoofedOrphan, template, currentSandboxBlueprintHash, vettedHashes)
 	require.True(t, isStaleSpoofed, "Orphaned sandbox with spoofed hash but modified PodSpec should be stale")
 
 	// Case 2: Orphaned sandbox with matching hash label and genuine/fully vetted PodSpec.
@@ -1553,7 +1505,7 @@ func TestIsSandboxStale_OrphanedSandboxVetting(t *testing.T) {
 		Spec: sandboxv1beta1.SandboxSpec{SandboxBlueprint: sandboxv1beta1.SandboxBlueprint{PodTemplate: sandboxv1beta1.PodTemplate{Spec: *genuineSpec}}},
 	}
 
-	isStaleGenuine := r.isSandboxStale(ctx, genuineOrphan, template, currentSandboxBlueprintHash, vettedHashes)
+	isStaleGenuine := isSandboxStale(ctx, genuineOrphan, template, currentSandboxBlueprintHash, vettedHashes)
 	require.False(t, isStaleGenuine, "Orphaned sandbox with genuine fully vetted PodSpec should be fresh")
 }
 
@@ -2240,8 +2192,6 @@ func TestCompareSandboxBlueprint(t *testing.T) {
 		},
 	}
 
-	r := &SandboxWarmPoolReconciler{}
-
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			template := &extensionsv1beta1.SandboxTemplate{
@@ -2250,7 +2200,7 @@ func TestCompareSandboxBlueprint(t *testing.T) {
 					SandboxBlueprint:        tt.templateSandboxBlueprint,
 				},
 			}
-			result := r.compareSandboxBlueprint(template, &tt.actualSandboxBlueprint)
+			result := compareSandboxBlueprint(template, &tt.actualSandboxBlueprint)
 			require.Equal(t, tt.expectedResult, result)
 		})
 	}

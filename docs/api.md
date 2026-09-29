@@ -818,7 +818,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `Recreate` | RecreateSandboxWarmPoolUpdateStrategyType indicates that stale pods are deleted immediately to ensure the pool only contains fresh pods.<br />Note: This applies to PodTemplate spec changes only. Changes to annotations or labels in the template do not trigger recreate.<br /> |
-| `OnReplenish` | OnReplenishSandboxWarmPoolUpdateStrategyType indicates that stale pods are only replaced when they are manually deleted or when these stale pods are adopted by sandboxclaims and hence replaced by fresh pods.<br /> |
+| `OnReplenish` | OnReplenishSandboxWarmPoolUpdateStrategyType is kept for compatibility and replaces stale sandboxes like Recreate.<br />SandboxClaims never adopt a stale sandbox, so waiting for adoption to replenish it would strand it in the pool.<br /> |
 
 
 #### ShutdownPolicy
@@ -1203,7 +1203,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `Recreate` | RecreateSandboxWarmPoolUpdateStrategyType indicates that stale sandboxes are deleted immediately to ensure the pool only contains fresh sandboxes.<br />Note: This applies to changes in the template's SandboxBlueprint only. Changes to annotations, labels, or template-level policies do not trigger recreate.<br /> |
-| `OnReplenish` | OnReplenishSandboxWarmPoolUpdateStrategyType indicates that stale sandboxes are only replaced when they are manually deleted or when these stale sandboxes are adopted by sandboxclaims and hence replaced by fresh sandboxes.<br /> |
+| `OnReplenish` | OnReplenishSandboxWarmPoolUpdateStrategyType is kept for compatibility and replaces stale sandboxes like Recreate.<br />SandboxClaims never adopt a stale sandbox, so waiting for adoption to replenish it would strand it in the pool.<br /> |
 
 
 #### ShutdownPolicy

@@ -64,7 +64,8 @@ const (
 	// RecreateSandboxWarmPoolUpdateStrategyType indicates that stale sandboxes are deleted immediately to ensure the pool only contains fresh sandboxes.
 	// Note: This applies to changes in the template's SandboxBlueprint only. Changes to annotations, labels, or template-level policies do not trigger recreate.
 	RecreateSandboxWarmPoolUpdateStrategyType SandboxWarmPoolUpdateStrategyType = "Recreate"
-	// OnReplenishSandboxWarmPoolUpdateStrategyType indicates that stale sandboxes are only replaced when they are manually deleted or when these stale sandboxes are adopted by sandboxclaims and hence replaced by fresh sandboxes.
+	// OnReplenishSandboxWarmPoolUpdateStrategyType is kept for compatibility and replaces stale sandboxes like Recreate.
+	// SandboxClaims never adopt a stale sandbox, so waiting for adoption to replenish it would strand it in the pool.
 	OnReplenishSandboxWarmPoolUpdateStrategyType SandboxWarmPoolUpdateStrategyType = "OnReplenish"
 )
 

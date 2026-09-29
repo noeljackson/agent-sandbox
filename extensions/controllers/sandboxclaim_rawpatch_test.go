@@ -294,8 +294,9 @@ func warmAdoptionFixtures() (*extensionsv1beta1.SandboxClaim, *extensionsv1beta1
 			Namespace: "default",
 			UID:       "warm-sb-uid",
 			Labels: map[string]string{
-				warmPoolSandboxLabel:   sandboxcontrollers.NameHash("test-pool"),
-				sandboxTemplateRefHash: SandboxTemplateRefHash("test-template"),
+				warmPoolSandboxLabel:                    sandboxcontrollers.NameHash("test-pool"),
+				sandboxTemplateRefHash:                  SandboxTemplateRefHash("test-template"),
+				sandboxv1beta1.SandboxTemplateHashLabel: currentRevision(template),
 			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: "extensions.agents.x-k8s.io/v1beta1",
