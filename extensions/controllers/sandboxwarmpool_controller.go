@@ -82,6 +82,11 @@ const (
 	// graceRequeueSlack pads the self-scheduled post-grace requeue so the
 	// re-evaluation lands strictly after the deadline despite clock jitter.
 	graceRequeueSlack = 2 * time.Second
+
+	// memberChangedRequeueDelay is the fallback requeue after a guarded member
+	// delete was refused because the member changed after it was evaluated.
+	// The write that changed it normally re-enqueues the pool sooner.
+	memberChangedRequeueDelay = time.Second
 )
 
 // graceRequeueJitterFactor spreads the self-scheduled post-grace requeues of
@@ -507,7 +512,7 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 	// terminatingReplicas counts pool-owned sandboxes that are deleting (or
 	// were deleted by us but not yet observed by the cache): they are not
 	// active, but they still occupy capacity until fully gone.
-	activeSandboxes, terminatingReplicas, allErrors := r.filterActiveSandboxes(ctx, poolKey, warmPool, sandboxList.Items, template, currentSandboxBlueprintHash, tmplErr)
+	activeSandboxes, terminatingReplicas, membersChanged, allErrors := r.filterActiveSandboxes(ctx, poolKey, warmPool, sandboxList.Items, template, currentSandboxBlueprintHash, tmplErr)
 
 	now := r.clockNow()
 	var healthySandboxes []sandboxv1beta1.Sandbox
@@ -548,20 +553,26 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 			logger.Info("Deleting stuck warm pool sandbox",
 				"sandbox", sb.Name,
 				"age", age.Round(time.Second))
-			r.exp().ExpectDeletion(poolKey, sb.UID)
-			if err := r.Delete(ctx, &sb); err != nil {
-				r.exp().DeletionObserved(poolKey, sb.UID)
+			outcome, err := r.deletePoolMember(ctx, poolKey, warmPool, &sb)
+			switch {
+			case err != nil:
 				logger.Error(err, "Failed to delete stuck sandbox", "sandbox", sb.Name)
 				allErrors = errors.Join(allErrors, err)
 				// The sandbox still exists; keep counting it as active so the
 				// create path cannot overshoot spec.replicas.
 				healthySandboxes = append(healthySandboxes, sb)
-				continue
+			case outcome == memberDeleted:
+				// Successfully deleted: it now occupies capacity as terminating
+				// until the deletion is observed; the replacement is created on a
+				// later reconcile once it no longer counts against the target.
+				terminatingReplicas++
+			case outcome == memberChanged:
+				// Changed after it was evaluated (possibly adopted): keep it
+				// counted and re-evaluate from a fresh view.
+				healthySandboxes = append(healthySandboxes, sb)
+				membersChanged = true
 			}
-			// Successfully deleted: it now occupies capacity as terminating
-			// until the deletion is observed; the replacement is created on a
-			// later reconcile once it no longer counts against the target.
-			terminatingReplicas++
+			// memberGone and memberNotDeletable: no longer part of this pool.
 			continue
 		}
 		healthySandboxes = append(healthySandboxes, sb)
@@ -735,33 +746,29 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 			})
 
 			toDeleteCount := min(sandboxesToDelete, int32(len(activeSandboxes)))
+			var excessChanged atomic.Bool
 			// Parallel sandbox deletion with adaptive slow-start batching (starts with 1 and doubles on success)
 			_, deleteErr := slowStartBatch(ctx, int(toDeleteCount), 1, func(idx int) error {
 				sb := &activeSandboxes[idx]
-				r.exp().ExpectDeletion(poolKey, sb.UID)
-				err := r.Delete(ctx, sb)
-				if err == nil {
-					return nil
+				outcome, err := r.deletePoolMember(ctx, poolKey, warmPool, sb)
+				if err != nil {
+					logger.Error(err, "Failed to delete sandbox", "sandbox", sb.Name, "namespace", sb.Namespace)
+					return err
 				}
-				// No delete watch event will lower this expectation: on
-				// NotFound the object is already gone (its delete event may
-				// have fired before the expectation was raised), and on any
-				// other error nothing was deleted. Observe synthetically so
-				// the pool is not blocked until the expectations timeout —
-				// the same recovery kube's ReplicaSet controller applies to
-				// failed deletes.
-				r.exp().DeletionObserved(poolKey, sb.UID)
-				if k8serrors.IsNotFound(err) {
-					// Not an error for the batch: the desired outcome
-					// (sandbox gone) already holds.
-					return nil
+				// Gone or no longer ours is not an error for the batch: the
+				// sandbox has left the pool either way. A member that changed
+				// after it was evaluated is re-evaluated on the next pass.
+				if outcome == memberChanged {
+					excessChanged.Store(true)
 				}
-				logger.Error(err, "Failed to delete sandbox", "sandbox", sb.Name, "namespace", sb.Namespace)
-				return err
+				return nil
 			})
 			if deleteErr != nil {
 				logger.Error(deleteErr, "Failed to delete pool sandboxes")
 				allErrors = errors.Join(allErrors, deleteErr)
+			}
+			if excessChanged.Load() {
+				membersChanged = true
 			}
 		}
 	}
@@ -788,6 +795,12 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 		nextGraceDeadline = wait.Jitter(nextGraceDeadline, graceRequeueJitterFactor)
 	}
 	requeueAfter = minNonZeroDuration(requeueAfter, nextGraceDeadline)
+
+	// A guarded delete refused by its preconditions is retried from a fresh
+	// view, never forced.
+	if membersChanged {
+		requeueAfter = minNonZeroDuration(requeueAfter, memberChangedRequeueDelay)
+	}
 
 	if tmplErr != nil && !k8serrors.IsNotFound(tmplErr) {
 		allErrors = errors.Join(allErrors, tmplErr)
@@ -908,12 +921,10 @@ func setWarmLaunchTypeLabelIfNeeded(sb *sandboxv1beta1.Sandbox) bool {
 // deleted but whose deletion the cache has not observed yet, and ones deleted
 // as stale in this pass. Terminating sandboxes are excluded from active (and
 // so from Ready accounting), but still occupy capacity, so the create path
-// must count them against spec.replicas (#1215).
-func (r *SandboxWarmPoolReconciler) filterActiveSandboxes(ctx context.Context, poolKey types.NamespacedName, warmPool *extensionsv1beta1.SandboxWarmPool, sandboxes []sandboxv1beta1.Sandbox, template *extensionsv1beta1.SandboxTemplate, currentSandboxBlueprintHash string, tmplErr error) ([]sandboxv1beta1.Sandbox, int32, error) {
+// must count them against spec.replicas (#1215). changed reports that a
+// guarded delete was refused because a member changed after it was evaluated.
+func (r *SandboxWarmPoolReconciler) filterActiveSandboxes(ctx context.Context, poolKey types.NamespacedName, warmPool *extensionsv1beta1.SandboxWarmPool, sandboxes []sandboxv1beta1.Sandbox, template *extensionsv1beta1.SandboxTemplate, currentSandboxBlueprintHash string, tmplErr error) (activeSandboxes []sandboxv1beta1.Sandbox, terminatingReplicas int32, changed bool, allErrors error) {
 	logger := log.FromContext(ctx)
-	var activeSandboxes []sandboxv1beta1.Sandbox
-	terminatingReplicas := int32(0)
-	var allErrors error
 
 	vettedHashes := make(map[string]bool)
 
@@ -957,20 +968,21 @@ func (r *SandboxWarmPoolReconciler) filterActiveSandboxes(ctx context.Context, p
 		if tmplErr == nil && (updateStrategy == extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType || isOrphan) {
 			if r.isSandboxStale(ctx, &sb, template, currentSandboxBlueprintHash, vettedHashes) {
 				logger.Info("Deleting stale sandbox", "sandbox", sb.Name, "isOrphan", isOrphan)
-				// Only pool-owned sandboxes get deletion expectations: the
-				// watch handler can only map owned delete events back to the
-				// pool, and only owned sandboxes count against the target.
-				if isControlledByPool {
-					r.exp().ExpectDeletion(poolKey, sb.UID)
-				}
-				if err := r.Delete(ctx, &sb); err != nil {
-					if isControlledByPool {
-						r.exp().DeletionObserved(poolKey, sb.UID)
-					}
+				outcome, err := r.deletePoolMember(ctx, poolKey, warmPool, &sb)
+				switch {
+				case err != nil:
 					logger.Error(err, "Failed to delete stale sandbox", "sandbox", sb.Name)
 					allErrors = errors.Join(allErrors, err)
-				} else if isControlledByPool {
+				case outcome == memberDeleted && isControlledByPool:
 					terminatingReplicas++
+				case outcome == memberChanged:
+					// Still present and stale: count it against the target so
+					// replacements cannot overshoot, and re-evaluate it from a
+					// fresh view.
+					if isControlledByPool {
+						terminatingReplicas++
+					}
+					changed = true
 				}
 				continue
 			}
@@ -995,7 +1007,103 @@ func (r *SandboxWarmPoolReconciler) filterActiveSandboxes(ctx context.Context, p
 
 		activeSandboxes = append(activeSandboxes, sb)
 	}
-	return activeSandboxes, terminatingReplicas, allErrors
+	return activeSandboxes, terminatingReplicas, changed, allErrors
+}
+
+// memberDeleteOutcome classifies a guarded warm pool member delete.
+type memberDeleteOutcome int
+
+const (
+	// memberDeleted: the API server accepted the delete of the exact
+	// version that was evaluated.
+	memberDeleted memberDeleteOutcome = iota
+	// memberGone: the member no longer exists.
+	memberGone
+	// memberNotDeletable: the object in hand is not a member this pool may
+	// delete (adopted by a claim, owned by another controller, relabeled, or
+	// already terminating). Nothing was sent to the API server.
+	memberNotDeletable
+	// memberChanged: the UID or resourceVersion precondition failed because
+	// the member changed after it was evaluated (for example, a claim adopted
+	// it). Nothing was deleted; the pool re-evaluates it from a fresh view.
+	memberChanged
+)
+
+// poolMemberDeletable reports whether this pool may delete sb and whether sb
+// is pool-owned (as opposed to an orphan still carrying this pool's label).
+// A member adopted by a claim has lost both the pool's controller reference
+// and the pool label, so it never qualifies.
+func poolMemberDeletable(warmPool *extensionsv1beta1.SandboxWarmPool, sb *sandboxv1beta1.Sandbox) (owned, deletable bool) {
+	if !sb.DeletionTimestamp.IsZero() {
+		return false, false
+	}
+	if sb.Labels[warmPoolSandboxLabel] != sandboxcontrollers.NameHash(warmPool.Name) {
+		return false, false
+	}
+	controllerRef := metav1.GetControllerOf(sb)
+	if controllerRef == nil {
+		return false, true
+	}
+	if controllerRef.UID == warmPool.UID {
+		return true, true
+	}
+	return false, false
+}
+
+// deletePoolMember deletes a warm pool member only while it is still exactly
+// the pool member this reconcile evaluated.
+//
+// A Sandbox owns its Pod and PVCs, so deleting a Sandbox that a SandboxClaim
+// has just adopted would garbage-collect the claimed environment's volume.
+// The informer cache can lag an adoption, so the member is first re-verified
+// in hand (still pool-owned or a pool-labeled orphan, still labeled for this
+// pool, not terminating), and the delete then carries UID and
+// resourceVersion preconditions. The API server therefore deletes only the
+// exact version that was verified: adoption rewrites the Sandbox's owner
+// references and labels, so an adopted Sandbox can never satisfy the
+// preconditions, and a recreated Sandbox with the same name fails the UID
+// check. A refused delete is never forced or retried against a newer
+// version here; the write that changed the member re-enqueues the pool,
+// which re-evaluates it from a fresh view.
+func (r *SandboxWarmPoolReconciler) deletePoolMember(ctx context.Context, poolKey types.NamespacedName, warmPool *extensionsv1beta1.SandboxWarmPool, sb *sandboxv1beta1.Sandbox) (memberDeleteOutcome, error) {
+	owned, deletable := poolMemberDeletable(warmPool, sb)
+	if !deletable {
+		log.FromContext(ctx).Info("Skipping delete of sandbox that is no longer a member of this pool",
+			"sandbox", sb.Name, "poolName", warmPool.Name)
+		return memberNotDeletable, nil
+	}
+
+	// Only pool-owned sandboxes get deletion expectations: the watch handler
+	// can only map owned delete events back to the pool, and only owned
+	// sandboxes count against the target.
+	if owned {
+		r.exp().ExpectDeletion(poolKey, sb.UID)
+	}
+	uid := sb.UID
+	resourceVersion := sb.ResourceVersion
+	err := r.Delete(ctx, sb, client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion})
+	if err == nil {
+		return memberDeleted, nil
+	}
+	// No delete watch event will lower this expectation: on NotFound the
+	// object is already gone (its delete event may have fired before the
+	// expectation was raised), and on any other error nothing was deleted.
+	// Observe synthetically so the pool is not blocked until the
+	// expectations timeout, the same recovery kube's ReplicaSet controller
+	// applies to failed deletes.
+	if owned {
+		r.exp().DeletionObserved(poolKey, sb.UID)
+	}
+	switch {
+	case k8serrors.IsNotFound(err):
+		return memberGone, nil
+	case k8serrors.IsConflict(err):
+		log.FromContext(ctx).Info("Refused to delete sandbox that changed after it was evaluated; re-evaluating",
+			"sandbox", sb.Name, "poolName", warmPool.Name, "resourceVersion", resourceVersion)
+		return memberChanged, nil
+	default:
+		return memberNotDeletable, err
+	}
 }
 
 // computePodTemplateHash computes a hash of the sandbox template's Spec.PodTemplate.
