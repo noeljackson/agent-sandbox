@@ -997,43 +997,18 @@ func (r *SandboxClaimReconciler) getCandidate(ctx context.Context, claim *extens
 	var adoptingFallback bool
 	var pendingNetworkCandidates int
 
-	// Lazily resolve, at most once, whether the claim's warm pool uses the Recreate strategy and,
-	// if so, the blueprint hash a current sandbox must carry. The strategy lives on the
-	// SandboxWarmPool spec (not on the pooled Sandboxes), so we read it directly from the pool the
-	// claim references. Under Recreate the pool must only serve sandboxes reflecting the current
-	// template; during an in-place template update stale sandboxes are still being deleted, so a
-	// candidate whose blueprint hash no longer matches must be rejected (issue #764). We compute
-	// the same blueprint hash the pool's staleness check uses (SandboxTemplateHashLabel) so both
-	// sides agree on what "stale under Recreate" means. We also keep the resolved SandboxTemplate so
-	// that, on a hash-label mismatch, we can fall back to the same semantic blueprint comparison the
-	// pool controller uses (see isSandboxStale): a candidate whose hash label is missing or differs
-	// but whose blueprint is semantically identical to the template is kept (not deleted/recreated)
-	// by the pool, so the claim must treat it as fresh too — otherwise a Recreate pool full of
-	// pre-label sandboxes becomes permanently unadoptable after a controller upgrade. OnReplenish
-	// deliberately keeps adopting stale sandboxes, so it never pays the SandboxTemplate lookup below.
-	var expectedBlueprintHash string
-	var expectedTemplate *extensionsv1beta1.SandboxTemplate
-	var isRecreate bool
-	var recreateResolveErr error
-	var recreateResolved bool
-	resolveRecreate := func() (bool, string, *extensionsv1beta1.SandboxTemplate, error) {
-		if !recreateResolved {
-			recreateResolved = true
-			warmPool, err := r.getWarmPool(ctx, claim)
-			if err != nil {
-				recreateResolveErr = err
-			} else if resolveUpdateStrategy(warmPool) == extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType {
-				isRecreate = true
-				template, err := r.getTemplateForWarmPool(ctx, claim.Namespace, warmPool)
-				if err != nil {
-					recreateResolveErr = err
-				} else {
-					expectedTemplate = template
-					expectedBlueprintHash, recreateResolveErr = computeSandboxBlueprintHash(template)
-				}
-			}
+	// Lazily resolve, at most once, the pool's current template revision (see poolRevision). A
+	// claim adopts only members built from it, under every update strategy (issue #764), so an
+	// empty queue costs no lookup.
+	var revision *poolRevision
+	var revisionErr error
+	var revisionResolved bool
+	resolveRevision := func() (*poolRevision, error) {
+		if !revisionResolved {
+			revisionResolved = true
+			revision, revisionErr = r.currentPoolRevision(ctx, claim)
 		}
-		return isRecreate, expectedBlueprintHash, expectedTemplate, recreateResolveErr
+		return revision, revisionErr
 	}
 
 	// Instantly returns unused keys the moment we find a valid/ready candidate!
@@ -1124,6 +1099,23 @@ func (r *SandboxClaimReconciler) getCandidate(ctx context.Context, claim *extens
 			return nil, queue.SandboxKey{}, pendingNetworkCandidates, err
 		}
 
+		rev, err := resolveRevision()
+		if err != nil {
+			// We cannot resolve the pool's current template revision. This is likely a transient
+			// lookup error and the candidate may well be fresh, so requeue it rather than draining
+			// it from the pool; but do not adopt it here, since adopting an unverified member risks
+			// handing out a stale version. The claim retries or cold starts instead. A candidate
+			// whose backing Pod has not been observed yet (no cached PodIPs) is also a
+			// pending-network candidate, so count it the same way the observation check below does
+			// to keep the caller's retry accounting consistent.
+			logger.V(1).Info("Requeuing candidate: unable to resolve warm pool template revision", "sandbox", adopted.Name, "warmPool", claim.Spec.WarmPoolRef.Name, "error", err.Error())
+			if len(adopted.Status.PodIPs) == 0 {
+				pendingNetworkCandidates++
+			}
+			skipped = append(skipped, adoptedKey)
+			continue
+		}
+
 		if err := verifySandboxCandidate(adopted, claim); err != nil {
 			logger.V(1).Info("sandbox candidate can't be adopted", "sandbox", adopted.Name, "warmPool", claim.Spec.WarmPoolRef.Name, "reason", err.Error())
 			// If it is a good sandbox in the wrong namespace, put it back.
@@ -1133,35 +1125,11 @@ func (r *SandboxClaimReconciler) getCandidate(ctx context.Context, claim *extens
 			}
 			continue
 		}
-
-		// Enforce blueprint version consistency only under the Recreate strategy (issue #764).
-		recreate, expectedHash, expectedTemplate, err := resolveRecreate()
-		if err != nil {
-			// We cannot determine the pool's strategy or compute the expected hash. This is likely
-			// a transient lookup error and the candidate may well be fresh, so requeue it rather
-			// than draining it from the pool; but do not adopt it here, since under a possibly
-			// Recreate pool adopting an unverified pod risks handing out a stale version. The claim
-			// retries or cold starts instead. A candidate whose backing Pod has not been observed
-			// yet (no cached PodIPs) is also a pending-network candidate, so count it the same way
-			// the observation check below does to keep the caller's retry accounting consistent.
-			logger.V(1).Info("Requeuing candidate: unable to resolve warm pool update strategy", "sandbox", adopted.Name, "warmPool", claim.Spec.WarmPoolRef.Name, "error", err.Error())
-			if len(adopted.Status.PodIPs) == 0 {
-				pendingNetworkCandidates++
-			}
-			skipped = append(skipped, adoptedKey)
-			continue
-		}
-		// Under Recreate, mirror the pool controller's isSandboxStale semantics: a hash-label match
-		// means fresh, but a missing/mismatched hash label falls back to the same semantic blueprint
-		// comparison rather than being treated as stale outright. Only drop the candidate when the
-		// blueprint also differs semantically. Dropping without requeue is safe there because such a
-		// candidate is genuinely stale, so the pool controller is deleting it and will enqueue a
-		// fresh replacement via the Sandbox watch. Conversely, a semantically-identical candidate is
-		// kept by the pool, so we must adopt it here instead of cold-starting against a "full" pool.
-		if recreate &&
-			adopted.Labels[v1beta1.SandboxTemplateHashLabel] != expectedHash &&
-			!compareSandboxBlueprint(expectedTemplate, &adopted.Spec.SandboxBlueprint) {
-			logger.V(1).Info("Skipping stale candidate under Recreate strategy", "sandbox", adopted.Name, "warmPool", claim.Spec.WarmPoolRef.Name)
+		if err := verifyCandidateRevision(ctx, adopted, rev); err != nil {
+			// Dropped from the queue for good: stale members are never handed out, and the warm
+			// pool controller is deleting this one and will enqueue a fresh replacement via the
+			// Sandbox watch.
+			logger.Info("Skipping stale warm pool sandbox", "sandbox", adopted.Name, "warmPool", claim.Spec.WarmPoolRef.Name, "claim", claim.Name, "reason", err.Error())
 			continue
 		}
 
@@ -1496,6 +1464,7 @@ func (r *SandboxClaimReconciler) resolveAdoptionCompletion(ctx context.Context, 
 	reader := r.authoritativeReader()
 	key := client.ObjectKey{Namespace: claim.Namespace, Name: sandboxName}
 	var resolved *v1beta1.Sandbox
+	var revision *poolRevision
 	attempt := func() error {
 		fresh := &v1beta1.Sandbox{}
 		if err := reader.Get(ctx, key, fresh); err != nil {
@@ -1509,7 +1478,16 @@ func (r *SandboxClaimReconciler) resolveAdoptionCompletion(ctx context.Context, 
 		if !utils.MatchesGroupKind(metav1.GetControllerOf(fresh), extensionsv1beta1.GroupVersion.Group, extensionsv1beta1.SandboxWarmPoolKind) {
 			return fmt.Errorf("%w: sandbox %s is no longer pool-owned and not controlled by claim %s", errAdoptionConflict, sandboxName, claim.Name)
 		}
+		if revision == nil {
+			var err error
+			if revision, err = r.currentPoolRevision(ctx, claim); err != nil {
+				return err
+			}
+		}
 		if err := verifySandboxCandidate(fresh, claim); err != nil {
+			return fmt.Errorf("%w: sandbox %s is no longer adoptable by claim %s: %s", errAdoptionConflict, sandboxName, claim.Name, err.Error())
+		}
+		if err := verifyCandidateRevision(ctx, fresh, revision); err != nil {
 			return fmt.Errorf("%w: sandbox %s is no longer adoptable by claim %s: %s", errAdoptionConflict, sandboxName, claim.Name, err.Error())
 		}
 		// Still pool-owned and adoptable: re-patch on the fresh base; a
@@ -2098,7 +2076,11 @@ func (r *SandboxClaimReconciler) getOrCreateSandbox(ctx context.Context, claim *
 			if utils.MatchesGroupKind(controllerRef, extensionsv1beta1.GroupVersion.Group, extensionsv1beta1.SandboxWarmPoolKind) {
 				// Still in warm pool. Try to complete adoption!
 				logger.Info("Sandbox found in claim metadata still in warm pool, trying to complete adoption", "sandbox", sbName, "claim", claim.Name)
-				if err := verifySandboxCandidate(sandbox, claim); err != nil {
+				revision, err := r.currentPoolRevision(ctx, claim)
+				if err != nil {
+					return nil, err
+				}
+				if err := errors.Join(verifySandboxCandidate(sandbox, claim), verifyCandidateRevision(ctx, sandbox, revision)); err != nil {
 					logger.Info("Sandbox recorded in claim metadata cannot be adopted, removing stale reference", "sandboxName", sbName, "fromLabel", fromLabel, "claim", claim.Name, "reason", err.Error())
 					patch := client.MergeFrom(claim.DeepCopy())
 					if fromLabel {
@@ -2289,6 +2271,53 @@ func (r *SandboxClaimReconciler) getTemplateForWarmPool(ctx context.Context, nam
 	}
 
 	return template, nil
+}
+
+// errStaleRevision marks a warm pool member built from a template revision
+// other than the pool's current one. Such members are never handed out.
+var errStaleRevision = errors.New("warm pool sandbox does not match the pool's current template revision")
+
+// poolRevision is the warm pool's current template revision, resolved once
+// per adoption attempt. A claim adopts only members that match it, under
+// every update strategy: a pool may still hold members built from an older
+// template (or from a template the pool no longer references), and handing
+// one out would give the claim an environment that no longer reflects the
+// current template. The claim uses the pool controller's own isSandboxStale
+// predicate, so a member the pool keeps is always adoptable (including
+// pre-label members that are semantically current) and a member the claim
+// rejects is always replaced by the pool.
+type poolRevision struct {
+	template      *extensionsv1beta1.SandboxTemplate
+	blueprintHash string
+	vettedHashes  map[string]bool
+}
+
+// currentPoolRevision resolves the claim's warm pool template and its
+// blueprint hash. Failing to resolve it fails closed: without a revision no
+// member can be verified, so none is adopted.
+func (r *SandboxClaimReconciler) currentPoolRevision(ctx context.Context, claim *extensionsv1beta1.SandboxClaim) (*poolRevision, error) {
+	template, err := r.getTemplate(ctx, claim)
+	if err != nil {
+		return nil, err
+	}
+	hash, err := computeSandboxBlueprintHash(template)
+	if err != nil {
+		return nil, fmt.Errorf("computing current revision of warm pool %q: %w", claim.Spec.WarmPoolRef.Name, err)
+	}
+	return &poolRevision{template: template, blueprintHash: hash, vettedHashes: make(map[string]bool)}, nil
+}
+
+// verifyCandidateRevision checks that a warm pool member verified by
+// verifySandboxCandidate was built from the pool's current template revision.
+func verifyCandidateRevision(ctx context.Context, candidate *v1beta1.Sandbox, revision *poolRevision) error {
+	if revision == nil {
+		return fmt.Errorf("%w: current revision unknown", errStaleRevision)
+	}
+	if isSandboxStale(ctx, candidate, revision.template, revision.blueprintHash, revision.vettedHashes) {
+		return fmt.Errorf("%w: sandbox revision %q, current template %q revision %q", errStaleRevision,
+			candidate.Labels[v1beta1.SandboxTemplateHashLabel], revision.template.Name, revision.blueprintHash)
+	}
+	return nil
 }
 
 // resolveTemplateName safely extracts the SandboxTemplate name from the Sandbox annotations.

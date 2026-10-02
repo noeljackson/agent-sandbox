@@ -153,6 +153,17 @@ func TestReconcilePoolNeverDeletesAdoptedMember(t *testing.T) {
 			},
 		},
 		{
+			name:     "stale-revision member under the default strategy",
+			replicas: 1,
+			ready:    true,
+			arrange: func(t *testing.T, _ *SandboxWarmPoolReconciler, c client.Client, template *extensionsv1beta1.SandboxTemplate, _ *sandboxv1beta1.Sandbox) {
+				current := &extensionsv1beta1.SandboxTemplate{}
+				require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(template), current))
+				current.Spec.PodTemplate.Spec.Containers[0].Image = "image-v2"
+				require.NoError(t, c.Update(t.Context(), current))
+			},
+		},
+		{
 			name:     "stuck member past the readiness grace period",
 			replicas: 1,
 			arrange: func(_ *testing.T, r *SandboxWarmPoolReconciler, _ client.Client, _ *extensionsv1beta1.SandboxTemplate, member *sandboxv1beta1.Sandbox) {

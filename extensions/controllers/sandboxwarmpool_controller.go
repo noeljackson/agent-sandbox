@@ -881,20 +881,6 @@ func isSandboxPodUnschedulable(sb *sandboxv1beta1.Sandbox) bool {
 	return cond.Status == metav1.ConditionFalse && cond.Reason == corev1.PodReasonUnschedulable
 }
 
-// resolveUpdateStrategy returns the effective update strategy for the warm pool,
-// defaulting to OnReplenish when unspecified or unknown.
-func resolveUpdateStrategy(warmPool *extensionsv1beta1.SandboxWarmPool) extensionsv1beta1.SandboxWarmPoolUpdateStrategyType {
-	if warmPool.Spec.UpdateStrategy == nil {
-		return extensionsv1beta1.OnReplenishSandboxWarmPoolUpdateStrategyType
-	}
-	switch warmPool.Spec.UpdateStrategy.Type {
-	case extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType:
-		return extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType
-	default:
-		return extensionsv1beta1.OnReplenishSandboxWarmPoolUpdateStrategyType
-	}
-}
-
 // adoptSandbox sets this warmpool as the owner of an orphaned sandbox.
 func (r *SandboxWarmPoolReconciler) adoptSandbox(ctx context.Context, warmPool *extensionsv1beta1.SandboxWarmPool, sb *sandboxv1beta1.Sandbox) error {
 	if err := controllerutil.SetControllerReference(warmPool, sb, r.Scheme); err != nil {
@@ -923,19 +909,15 @@ func setWarmLaunchTypeLabelIfNeeded(sb *sandboxv1beta1.Sandbox) bool {
 // so from Ready accounting), but still occupy capacity, so the create path
 // must count them against spec.replicas (#1215). changed reports that a
 // guarded delete was refused because a member changed after it was evaluated.
+//
+// Stale members are replaced under every update strategy. Claims never adopt
+// a member whose revision does not match the pool's current template (see
+// poolRevision), so under OnReplenish a stale member would otherwise hold a
+// replica slot that no claim can use.
 func (r *SandboxWarmPoolReconciler) filterActiveSandboxes(ctx context.Context, poolKey types.NamespacedName, warmPool *extensionsv1beta1.SandboxWarmPool, sandboxes []sandboxv1beta1.Sandbox, template *extensionsv1beta1.SandboxTemplate, currentSandboxBlueprintHash string, tmplErr error) (activeSandboxes []sandboxv1beta1.Sandbox, terminatingReplicas int32, changed bool, allErrors error) {
 	logger := log.FromContext(ctx)
 
 	vettedHashes := make(map[string]bool)
-
-	// Determine the update strategy, defaulting to OnReplenish if not specified or unknown.
-	updateStrategy := resolveUpdateStrategy(warmPool)
-	if raw := warmPool.Spec.UpdateStrategy; raw != nil &&
-		raw.Type != "" &&
-		raw.Type != extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType &&
-		raw.Type != extensionsv1beta1.OnReplenishSandboxWarmPoolUpdateStrategyType {
-		logger.Info("Unknown update strategy, defaulting to OnReplenish", "strategy", raw.Type)
-	}
 
 	for _, sb := range sandboxes {
 		controllerRef := metav1.GetControllerOf(&sb)
@@ -965,27 +947,25 @@ func (r *SandboxWarmPoolReconciler) filterActiveSandboxes(ctx context.Context, p
 			continue
 		}
 
-		if tmplErr == nil && (updateStrategy == extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType || isOrphan) {
-			if r.isSandboxStale(ctx, &sb, template, currentSandboxBlueprintHash, vettedHashes) {
-				logger.Info("Deleting stale sandbox", "sandbox", sb.Name, "isOrphan", isOrphan)
-				outcome, err := r.deletePoolMember(ctx, poolKey, warmPool, &sb)
-				switch {
-				case err != nil:
-					logger.Error(err, "Failed to delete stale sandbox", "sandbox", sb.Name)
-					allErrors = errors.Join(allErrors, err)
-				case outcome == memberDeleted && isControlledByPool:
+		if tmplErr == nil && isSandboxStale(ctx, &sb, template, currentSandboxBlueprintHash, vettedHashes) {
+			logger.Info("Deleting stale sandbox", "sandbox", sb.Name, "isOrphan", isOrphan)
+			outcome, err := r.deletePoolMember(ctx, poolKey, warmPool, &sb)
+			switch {
+			case err != nil:
+				logger.Error(err, "Failed to delete stale sandbox", "sandbox", sb.Name)
+				allErrors = errors.Join(allErrors, err)
+			case outcome == memberDeleted && isControlledByPool:
+				terminatingReplicas++
+			case outcome == memberChanged:
+				// Still present but never claimable: count it against the
+				// target so replacements cannot overshoot, and re-evaluate it
+				// from a fresh view.
+				if isControlledByPool {
 					terminatingReplicas++
-				case outcome == memberChanged:
-					// Still present and stale: count it against the target so
-					// replacements cannot overshoot, and re-evaluate it from a
-					// fresh view.
-					if isControlledByPool {
-						terminatingReplicas++
-					}
-					changed = true
 				}
-				continue
+				changed = true
 			}
+			continue
 		}
 
 		if isControlledByPool && setWarmLaunchTypeLabelIfNeeded(&sb) {
@@ -1261,8 +1241,11 @@ func (r *SandboxWarmPoolReconciler) getTemplate(ctx context.Context, warmPool *e
 
 // isSandboxStale checks if the sandbox version matches the current template.
 // It uses a cache (vettedHashes) to avoid repeated expensive DeepEqual calls
-// for sandboxes with the same hash.
-func (r *SandboxWarmPoolReconciler) isSandboxStale(
+// for sandboxes with the same hash. The warm pool controller replaces stale
+// members and the claim controller refuses to adopt them, so both must use
+// this one predicate: a member one side treats as current and the other as
+// stale would be neither replaced nor claimable.
+func isSandboxStale(
 	ctx context.Context,
 	sandbox *sandboxv1beta1.Sandbox,
 	template *extensionsv1beta1.SandboxTemplate,
