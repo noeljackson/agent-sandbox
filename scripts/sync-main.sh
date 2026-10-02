@@ -30,10 +30,17 @@ TARGET_BRANCH="${TARGET_BRANCH:-main}"
 FORK_OVERLAY_BRANCH="${FORK_OVERLAY_BRANCH:-fork-overlay}"
 
 # PR branches to merge into main. Update this list as PRs open/close.
+# Merged upstream and dropped: #683 (pr/claim-skip-not-ready-v2) and #795
+# (pr/fake-newclientset).
 PR_BRANCHES=(
-  pr/claim-skip-not-ready-v2         # #683: Briefly wait for rotating warm-pool candidates to report PodIPs
   pr/workspace-resources-only        # #459: Per-claim workspace container resource overrides + in-place resize on running sandboxes
-  pr/fake-newclientset               # #795: Add applyconfig-backed fake clientsets with NewClientset
+  feat/opt-in-pod-resource-resize-1054 # #1321: Opt-in in-place Sandbox resource resize (was fork PR #3 on main)
+  # Codewire Program #2238 (C0): warm pool members safe to claim. Not yet
+  # proposed upstream. claim-adopt-current-revision builds on
+  # warm-pool-guarded-member-deletes, so keep this order.
+  pr/warm-pool-guarded-member-deletes # Guard pool member deletes with UID and resourceVersion preconditions
+  pr/claim-adopt-current-revision    # Adopt only members built from the pool's current template revision
+  pr/claim-ready-after-pod-metadata  # Report claim Ready only after the Pod carries the claim's metadata
 )
 
 PUSH=false
@@ -257,7 +264,7 @@ if $PUSH; then
   echo "==> Pushing ${TARGET_BRANCH} to ${ORIGIN_REMOTE}..."
   git -C "$WORKTREE_DIR" push "$ORIGIN_REMOTE" "HEAD:${TARGET_REMOTE_REF}" \
     --force-with-lease="${TARGET_REMOTE_REF}:${EXPECTED_REMOTE_SHA}"
-  echo "Done. Image build should trigger if controller paths changed."
+  echo "Done. Dispatch the Build Codewire Controller workflow to build the controller image for ${HEAD_SHA}."
 else
   echo ""
   echo "Dry run only. Re-run with --push to publish ${ORIGIN_REMOTE}/${TARGET_BRANCH}."
