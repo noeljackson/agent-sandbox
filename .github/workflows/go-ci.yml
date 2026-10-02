@@ -29,4 +29,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test ./... -count=1
+      # E2E packages require a Kind cluster and bin/KUBECONFIG; that proof runs
+      # in the dedicated e2e workflow rather than this unit-only job.
+      - run: |
+          mapfile -t packages < <(
+            go list ./... | grep -vE '^sigs\.k8s\.io/agent-sandbox/test/e2e(/extensions)?$'
+          )
+          go test "${packages[@]}" -count=1
