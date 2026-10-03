@@ -70,17 +70,6 @@ func updateSandboxTemplateSpec(template *extensionsv1beta1.SandboxTemplate) {
 	})
 }
 
-func verifySandboxStaysSame(t *testing.T, tc *framework.TestContext, ns *corev1.Namespace, poolSandboxName string, sandboxWarmpoolID types.NamespacedName) {
-	// Wait a bit to be sure no deletion happens (controller processes updates asynchronously)
-	time.Sleep(5 * time.Second)
-
-	require.NoError(t, tc.WaitForWarmPoolReady(t.Context(), sandboxWarmpoolID))
-	sb := &sandboxv1beta1.Sandbox{}
-	err := tc.Get(t.Context(), types.NamespacedName{Name: poolSandboxName, Namespace: ns.Name}, sb)
-	require.NoError(t, err, "Sandbox should still exist")
-	require.True(t, sb.DeletionTimestamp.IsZero(), "Sandbox should not be marked for deletion")
-}
-
 func verifySandboxRecreated(t *testing.T, tc *framework.TestContext, ns *corev1.Namespace, poolSandboxName string, sandboxWarmpoolID types.NamespacedName, expectUpdate bool) {
 	require.Eventually(t, func() bool {
 		sb := &sandboxv1beta1.Sandbox{}
@@ -136,33 +125,13 @@ func verifySandboxHasUpdatedSpec(t *testing.T, tc *framework.TestContext, ns *co
 	require.True(t, found, "New sandbox should have the updated spec (env var TEST_ENV=updated)")
 }
 
-func verifyOnReplenishLifecycle(t *testing.T, tc *framework.TestContext, ns *corev1.Namespace, poolSandboxName string, sandboxWarmpoolID types.NamespacedName) {
-	// Verify old sandbox stays same initially
-	verifySandboxStaysSame(t, tc, ns, poolSandboxName, sandboxWarmpoolID)
-
-	// Delete the old sandbox to trigger replenishment
-	sb := &sandboxv1beta1.Sandbox{}
-	err := tc.Get(t.Context(), types.NamespacedName{Name: poolSandboxName, Namespace: ns.Name}, sb)
-	require.NoError(t, err, "Sandbox should still exist")
-	require.NoError(t, tc.Delete(t.Context(), sb), "Failed to delete sandbox for replenishment")
-
-	// Wait for the old sandbox to be gone
-	require.Eventually(t, func() bool {
-		err := tc.Get(t.Context(), types.NamespacedName{Name: poolSandboxName, Namespace: ns.Name}, &sandboxv1beta1.Sandbox{})
-		return k8serrors.IsNotFound(err)
-	}, defaultTestTimeout, defaultPollingInterval, "old sandbox should be deleted")
-
-	warmPool := &extensionsv1beta1.SandboxWarmPool{}
-	require.NoError(t, tc.Get(t.Context(), sandboxWarmpoolID, warmPool))
-
-	verifySandboxHasUpdatedSpec(t, tc, ns, poolSandboxName, warmPool)
-
-	// Wait for the warm pool to be ready again
-	require.NoError(t, tc.WaitForWarmPoolReady(t.Context(), sandboxWarmpoolID))
-}
-
 // Test basic rollout strategy for warmpool - default, onReplenish, recreate.
+// Claims never adopt a member built from an older template revision, so every
+// strategy replaces stale members instead of leaving them to be claimed.
 func TestWarmPoolRollout(t *testing.T) {
+	replacesStaleMembers := func(t *testing.T, tc *framework.TestContext, ns *corev1.Namespace, poolSandboxName string, sandboxWarmpoolID types.NamespacedName) {
+		verifySandboxRecreated(t, tc, ns, poolSandboxName, sandboxWarmpoolID, true)
+	}
 	cases := []struct {
 		name     string
 		strategy *extensionsv1beta1.SandboxWarmPoolUpdateStrategy
@@ -171,23 +140,21 @@ func TestWarmPoolRollout(t *testing.T) {
 		{
 			name:     "default",
 			strategy: nil,
-			verify:   verifyOnReplenishLifecycle,
+			verify:   replacesStaleMembers,
 		},
 		{
 			name: "onreplenish",
 			strategy: &extensionsv1beta1.SandboxWarmPoolUpdateStrategy{
 				Type: extensionsv1beta1.OnReplenishSandboxWarmPoolUpdateStrategyType,
 			},
-			verify: verifyOnReplenishLifecycle,
+			verify: replacesStaleMembers,
 		},
 		{
 			name: "recreate",
 			strategy: &extensionsv1beta1.SandboxWarmPoolUpdateStrategy{
 				Type: extensionsv1beta1.RecreateSandboxWarmPoolUpdateStrategyType,
 			},
-			verify: func(t *testing.T, tc *framework.TestContext, ns *corev1.Namespace, poolSandboxName string, sandboxWarmpoolID types.NamespacedName) {
-				verifySandboxRecreated(t, tc, ns, poolSandboxName, sandboxWarmpoolID, true)
-			},
+			verify: replacesStaleMembers,
 		},
 	}
 
