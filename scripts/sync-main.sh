@@ -195,9 +195,7 @@ for raw_branch in "${PR_BRANCHES[@]}"; do
 done
 
 GENERATED_PATHS=(
-  api/v1alpha1/zz_generated.deepcopy.go
   api/v1beta1/zz_generated.deepcopy.go
-  extensions/api/v1alpha1/zz_generated.deepcopy.go
   extensions/api/v1beta1/zz_generated.deepcopy.go
   clients/k8s
   k8s/crds
