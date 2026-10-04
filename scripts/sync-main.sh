@@ -41,6 +41,9 @@ PR_BRANCHES=(
   pr/warm-pool-guarded-member-deletes # Guard pool member deletes with UID and resourceVersion preconditions
   pr/claim-adopt-current-revision    # Adopt only members built from the pool's current template revision
   pr/claim-ready-after-pod-metadata  # Report claim Ready only after the Pod carries the claim's metadata
+  # Codewire #2434: a collision-free per-Sandbox Pod selector for warm member
+  # NetworkPolicies. Not yet proposed upstream.
+  pr/sandbox-uid-pod-label           # Stamp and enforce agents.x-k8s.io/sandbox-uid on every Sandbox Pod
 )
 
 PUSH=false
