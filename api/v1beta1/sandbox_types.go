@@ -162,6 +162,11 @@ const (
 	SandboxWarmPoolLabel = "agents.x-k8s.io/warm-pool-sandbox"
 	// SandboxTemplateRefHashLabel identifies which SandboxTemplate a Sandbox originated from.
 	SandboxTemplateRefHashLabel = "agents.x-k8s.io/sandbox-template-ref-hash"
+	// SandboxUIDLabel carries the metadata.uid of the Sandbox that controls a Pod. The
+	// Sandbox controller stamps it on every Pod it creates or adopts and restores it on
+	// every reconcile, so it is a collision-free per-Sandbox selector (for example in a
+	// NetworkPolicy) where the 32-bit sandbox-name-hash label is not.
+	SandboxUIDLabel = "agents.x-k8s.io/sandbox-uid"
 )
 
 type PodMetadata struct {
