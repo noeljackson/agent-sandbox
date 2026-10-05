@@ -19,8 +19,7 @@ spec:
     name: kata-aks-template
 
   updateStrategy:
-    # OnReplenish: stale pods are replaced only when they are adopted by a
-    # claim or manually deleted. This avoids killing healthy Kata VMs every
-    # time the template changes — flip to Recreate if you want immediate
-    # rollout of template updates.
+    # Claims never adopt a sandbox built from an older template revision, so
+    # every strategy replaces stale sandboxes when the template changes.
+    # OnReplenish is kept for compatibility and behaves like Recreate.
     type: OnReplenish

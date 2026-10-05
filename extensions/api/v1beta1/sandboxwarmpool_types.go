@@ -73,10 +73,9 @@ const (
 	// sandboxes are never touched.
 	// Note: This applies to changes in the template's SandboxBlueprint only. Changes to annotations, labels, or template-level policies do not trigger recreate.
 	RecreateSandboxWarmPoolUpdateStrategyType SandboxWarmPoolUpdateStrategyType = "Recreate"
-	// OnReplenishSandboxWarmPoolUpdateStrategyType leaves stale unclaimed sandboxes in place.
-	// A stale sandbox is only replaced with a fresh one when it is manually deleted, or when it
-	// is claimed by a SandboxClaim (which removes it from the pool and triggers replenishment).
-	// Already-claimed sandboxes are never touched.
+	// OnReplenishSandboxWarmPoolUpdateStrategyType is kept for compatibility and replaces stale
+	// unclaimed sandboxes like Recreate. SandboxClaims never adopt a stale sandbox, so waiting for
+	// a claim to replenish it would strand it in the pool. Already-claimed sandboxes are never touched.
 	OnReplenishSandboxWarmPoolUpdateStrategyType SandboxWarmPoolUpdateStrategyType = "OnReplenish"
 )
 
