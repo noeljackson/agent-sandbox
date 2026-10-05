@@ -44,6 +44,9 @@ PR_BRANCHES=(
   # A collision-free per-Sandbox Pod selector, for example for warm member
   # NetworkPolicies. Not yet proposed upstream.
   pr/sandbox-uid-pod-label           # Stamp and enforce agents.x-k8s.io/sandbox-uid on every Sandbox Pod
+  # The 2 MiB tunnel integrity test needs more than vitest's 5 s default on
+  # GitHub-hosted runners. Not yet proposed upstream.
+  pr/ts-tunnel-backpressure-timeout  # Give the 2 MiB PodTunnel integrity test a 30 s budget
 )
 
 PUSH=false
