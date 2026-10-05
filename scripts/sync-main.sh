@@ -35,13 +35,13 @@ FORK_OVERLAY_BRANCH="${FORK_OVERLAY_BRANCH:-fork-overlay}"
 PR_BRANCHES=(
   pr/workspace-resources-only        # #459: Per-claim workspace container resource overrides + in-place resize on running sandboxes
   feat/opt-in-pod-resource-resize-1054 # #1321: Opt-in in-place Sandbox resource resize (was fork PR #3 on main)
-  # Codewire Program #2238 (C0): warm pool members safe to claim. Not yet
-  # proposed upstream. claim-adopt-current-revision builds on
+  # Warm pool members safe to claim. Not yet proposed upstream.
+  # claim-adopt-current-revision builds on
   # warm-pool-guarded-member-deletes, so keep this order.
   pr/warm-pool-guarded-member-deletes # Guard pool member deletes with UID and resourceVersion preconditions
   pr/claim-adopt-current-revision    # Adopt only members built from the pool's current template revision
   pr/claim-ready-after-pod-metadata  # Report claim Ready only after the Pod carries the claim's metadata
-  # Codewire #2434: a collision-free per-Sandbox Pod selector for warm member
+  # A collision-free per-Sandbox Pod selector, for example for warm member
   # NetworkPolicies. Not yet proposed upstream.
   pr/sandbox-uid-pod-label           # Stamp and enforce agents.x-k8s.io/sandbox-uid on every Sandbox Pod
 )
@@ -263,9 +263,12 @@ echo "  old_remote_sha: ${EXPECTED_REMOTE_SHA}"
 if $PUSH; then
   echo ""
   echo "==> Pushing ${TARGET_BRANCH} to ${ORIGIN_REMOTE}..."
-  git -C "$WORKTREE_DIR" push "$ORIGIN_REMOTE" "HEAD:${TARGET_REMOTE_REF}" \
+  # The next sync replaces main, but consumers pin this commit and its image
+  # carries it as the OCI revision, so a tag keeps it fetchable.
+  git -C "$WORKTREE_DIR" push --atomic "$ORIGIN_REMOTE" \
+    "HEAD:${TARGET_REMOTE_REF}" "HEAD:refs/tags/generated/${TARGET_BRANCH}-${SHORT_SHA}" \
     --force-with-lease="${TARGET_REMOTE_REF}:${EXPECTED_REMOTE_SHA}"
-  echo "Done. Dispatch the Build Codewire Controller workflow to build the controller image for ${HEAD_SHA}."
+  echo "Done. The push starts the Build Controller Image workflow for ${HEAD_SHA}."
 else
   echo ""
   echo "Dry run only. Re-run with --push to publish ${ORIGIN_REMOTE}/${TARGET_BRANCH}."

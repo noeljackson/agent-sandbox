@@ -1,11 +1,26 @@
-name: Build Codewire Controller
+name: Build Controller Image
 
+# Every generated main publishes its controller image. A main pushed from a
+# workstation triggers `push`; Sync Generated Main pushes with GITHUB_TOKEN,
+# which starts no other workflow, so it calls this one for the new commit.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Generated main commit to build
+        required: true
+        type: string
 
 permissions:
   contents: read
   packages: write
+
+concurrency:
+  group: build-controller-${{ inputs.ref || github.sha }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -17,6 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
 
       - uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
