@@ -186,6 +186,9 @@ describe("PodTunnel", () => {
     client.destroy();
   });
 
+  // Relaying 2 MiB through the tunnel takes about 3.5 s on a 16-core
+  // workstation and 6-7 s on a 4-vCPU GitHub-hosted runner, so the default
+  // 5 s test timeout measures the machine rather than byte integrity.
   it("preserves byte integrity for a payload larger than the backpressure threshold", async () => {
     echo = await startEchoServer();
     api = await startFakeApiServer({ targetPort: echo.port });
@@ -218,7 +221,7 @@ describe("PodTunnel", () => {
     await done;
     expect(Buffer.concat(chunks).subarray(0, payload.length)).toEqual(payload);
     client.destroy();
-  });
+  }, 30_000);
 
   it("flushes data already queued for a slow local reader after the WS closes normally", async () => {
     const payload = Buffer.alloc(8 * 1024 * 1024);
