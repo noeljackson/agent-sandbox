@@ -895,6 +895,13 @@ func isSystemLabel(key string) bool {
 	return hasSystemReservedPrefix(key)
 }
 
+// isControllerManagedPodLabel reports whether a system-reserved label is one the
+// core controller sets on every Pod it manages, and therefore must not be scrubbed
+// during cleanup of previously-propagated labels.
+func isControllerManagedPodLabel(key string) bool {
+	return key == sandboxLabel || key == sandboxv1beta1.SandboxUIDLabel
+}
+
 // extensionPodLabelKeys must stay in sync with computeExtensionPodLabels so reconcile
 // removes stale extension labels when they are no longer expected on the Pod.
 var extensionPodLabelKeys = []string{
@@ -1741,6 +1748,7 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *sandboxv1
 	}
 	// Assign system-owned labels after merging user input so they cannot be overridden.
 	podLabels[sandboxLabel] = nameHash
+	podLabels[sandboxv1beta1.SandboxUIDLabel] = string(sandbox.UID)
 
 	// Propagate extension-owned labels from the Sandbox CR to the Pod, provided the Sandbox is
 	// owned by an extensions controller (SandboxClaim or SandboxWarmPool).
@@ -1848,6 +1856,14 @@ func (r *SandboxReconciler) updatePodMetadata(ctx context.Context, pod *corev1.P
 		pod.Labels[sandboxLabel] = nameHash
 		updated = true
 	}
+	// Restore the UID label if it was removed or altered, and backfill it on Pods
+	// created before the controller stamped it. Warm pool adoption keeps the
+	// Sandbox object and therefore its UID, so an adopted Pod keeps the value it
+	// was born with.
+	if sandboxUID := string(sandbox.UID); pod.Labels[sandboxv1beta1.SandboxUIDLabel] != sandboxUID {
+		pod.Labels[sandboxv1beta1.SandboxUIDLabel] = sandboxUID
+		updated = true
+	}
 	// Propagate pod template labels to the existing pod (e.g., after warm pool adoption),
 	// skipping system-reserved keys so a user-supplied template cannot override them.
 	var managedLabelKeys []string
@@ -1864,7 +1880,7 @@ func (r *SandboxReconciler) updatePodMetadata(ctx context.Context, pod *corev1.P
 	}
 	// Handle deletion of labels removed from the template. System keys recorded in the
 	// propagated list by an older (vulnerable) controller are also scrubbed, except the
-	// controller-owned name-hash label.
+	// controller-owned labels set above.
 	propagatedLabelsStr := pod.Annotations[sandboxv1beta1.SandboxPropagatedLabelsAnnotation]
 	if propagatedLabelsStr != "" {
 		propagatedLabels := strings.SplitSeq(propagatedLabelsStr, ",")
@@ -1873,7 +1889,7 @@ func (r *SandboxReconciler) updatePodMetadata(ctx context.Context, pod *corev1.P
 				continue
 			}
 			if isSystemLabel(k) {
-				if k == sandboxLabel {
+				if isControllerManagedPodLabel(k) {
 					continue
 				}
 				if _, exists := pod.Labels[k]; exists {

@@ -88,6 +88,7 @@ A `Sandbox` lets a tenant supply a `spec.podTemplate`, including arbitrary `meta
 The controller also relies on a set of **system-reserved** label and annotation keys to implement core behavior:
 
 - `agents.x-k8s.io/sandbox-name-hash` — the selector label used by the per-Sandbox headless `Service`. Traffic for a Sandbox is routed to the Pod(s) carrying the matching value.
+- `agents.x-k8s.io/sandbox-uid` — the `metadata.uid` of the Sandbox that controls the Pod. Unlike the 32-bit name hash it cannot collide between Sandboxes, so it is the label to select one Sandbox's Pod by, for example in a NetworkPolicy.
 - `agents.x-k8s.io/propagated-labels`, `agents.x-k8s.io/propagated-annotations`, and `opentelemetry.io/trace-context` — controller-managed annotations.
 
 Extension controllers (warm pool, claim) may set additional system-prefixed labels on the **Sandbox CR** (`metadata.labels`, `spec.podTemplate`, etc.). The core Sandbox reconciler does not propagate those to Pods; extension controllers own that lifecycle separately.
@@ -109,12 +110,12 @@ Related abuses: forging system-prefixed labels or overwriting controller-managed
 The core controller treats any label/annotation key under `agents.x-k8s.io/` or `extensions.agents.x-k8s.io/` (and the trace-context annotation) as **system-reserved** and never lets user-supplied `PodTemplate` metadata set them:
 
 - **Create path (`reconcilePod`)** and **adoption path (`updatePodMetadata`)** filter out system-reserved keys from the user template before applying them.
-- The Service selector label `agents.x-k8s.io/sandbox-name-hash` is assigned by the controller **after** merging user labels, so it cannot be overridden.
-- On adoption/update, system-reserved keys that an older (vulnerable) controller recorded in the `propagated-labels` / `propagated-annotations` lists are scrubbed from the Pod — except the controller-owned name-hash label and the controller-managed annotations (`propagated-labels`, `propagated-annotations`). Combined with always (re)setting the name-hash label to the controller's value, this prevents a stale or spoofed Service-selector label from surviving adoption.
+- The Service selector label `agents.x-k8s.io/sandbox-name-hash` and the `agents.x-k8s.io/sandbox-uid` label are assigned by the controller **after** merging user labels, so they cannot be overridden. Both are restored on every reconcile if they are changed or removed on the Pod.
+- On adoption/update, system-reserved keys that an older (vulnerable) controller recorded in the `propagated-labels` / `propagated-annotations` lists are scrubbed from the Pod — except the controller-owned name-hash and sandbox-uid labels and the controller-managed annotations (`propagated-labels`, `propagated-annotations`). Combined with always (re)setting the name-hash label to the controller's value, this prevents a stale or spoofed Service-selector label from surviving adoption.
 - System labels on `Sandbox.metadata.labels` are **not** copied to Pods by the core controller. Only non-system keys from `spec.podTemplate` are propagated.
 
 ### Out of Scope
 
 - Extension controllers manage their own labels on Sandbox CRs and may patch Pod metadata through separate reconciliation paths. The core controller intentionally does not encode extension owner-reference or warm-pool tracking logic.
-- The value of the name hash is still derived with FNV-1a. The label-protection controls above hold regardless of the hash algorithm; strengthening the hash (e.g. to a truncated SHA-256) is tracked separately.
+- The value of the name hash is still derived with FNV-1a. The label-protection controls above hold regardless of the hash algorithm; strengthening the hash (e.g. to a truncated SHA-256) is tracked separately. Selectors that must never match another Sandbox's Pod should use `agents.x-k8s.io/sandbox-uid`.
 - Network policy is the primary, defense-in-depth control for tenant isolation; this mitigation removes a control-plane bypass of the Service-based routing.
