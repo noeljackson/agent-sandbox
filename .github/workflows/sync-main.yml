@@ -72,12 +72,14 @@ jobs:
         run: |
           git remote add upstream https://github.com/kubernetes-sigs/agent-sandbox.git
           git fetch --no-tags upstream main
-          git show upstream/main:go.mod > "$RUNNER_TEMP/upstream-go.mod"
+          # setup-go parses module syntax only from a file named go.mod.
+          mkdir -p "$RUNNER_TEMP/upstream"
+          git show upstream/main:go.mod > "$RUNNER_TEMP/upstream/go.mod"
 
       - if: steps.plan.outputs.run == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: ${{ runner.temp }}/upstream-go.mod
+          go-version-file: ${{ runner.temp }}/upstream/go.mod
           cache: false
 
       - if: steps.plan.outputs.run == 'true'
