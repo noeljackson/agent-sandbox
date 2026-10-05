@@ -931,6 +931,9 @@ func (r *SandboxClaimReconciler) computeReadyCondition(claim *extensionsv1beta1.
 	// Forward the condition from Sandbox Status
 	for _, condition := range sandbox.Status.Conditions {
 		if condition.Type == string(v1beta1.SandboxConditionReady) {
+			if pending, ok := sandboxUpdatePendingCondition(claim, sandbox, condition); ok {
+				return pending
+			}
 			condition.ObservedGeneration = claim.Generation
 			return condition
 		}
@@ -943,6 +946,44 @@ func (r *SandboxClaimReconciler) computeReadyCondition(claim *extensionsv1beta1.
 		Message:            "Sandbox is not ready",
 		ObservedGeneration: claim.Generation,
 	}
+}
+
+// ClaimReasonSandboxUpdatePending is the claim Ready reason while the Sandbox
+// reports Ready for an older generation than its current spec. After a warm
+// adoption this is the window in which the backing Pod does not yet carry the
+// claim's identity labels and additionalPodMetadata.
+const ClaimReasonSandboxUpdatePending = "SandboxUpdatePending"
+
+// sandboxUpdatePendingCondition withholds claim readiness until the Sandbox
+// controller has applied the Sandbox's current generation to the backing Pod.
+//
+// Adoption (and any later additionalPodMetadata sync) writes the claim's
+// identity labels and additionalPodMetadata into the Sandbox's PodTemplate,
+// which bumps metadata.generation. The Pod itself is only relabeled when the
+// Sandbox controller next reconciles: it patches the Pod's metadata and only
+// then publishes a Ready condition stamped with that generation. A failed Pod
+// patch publishes Ready=False instead. The warm Sandbox's previous
+// Ready=True condition still carries the pre-adoption generation, so
+// forwarding it would report the claim Ready while the Pod still lacks the
+// claim's identity. Gating on the Ready condition's observedGeneration makes
+// claim Ready imply that the Pod carries the claim's current metadata, so
+// existing consumers of claim Ready need no change.
+//
+// With --sandbox-write-behind-window > 0 the Sandbox controller may defer the
+// Pod metadata patch of an already-owned Pod and still stamp Ready for the
+// new generation; the metadata then lands within the flush bound instead.
+func sandboxUpdatePendingCondition(claim *extensionsv1beta1.SandboxClaim, sandbox *v1beta1.Sandbox, ready metav1.Condition) (metav1.Condition, bool) {
+	if ready.Status != metav1.ConditionTrue || ready.ObservedGeneration >= sandbox.Generation {
+		return metav1.Condition{}, false
+	}
+	return metav1.Condition{
+		Type:   string(v1beta1.SandboxConditionReady),
+		Status: metav1.ConditionFalse,
+		Reason: ClaimReasonSandboxUpdatePending,
+		Message: fmt.Sprintf("Sandbox generation %d, which carries this claim's Pod metadata, is not yet applied to the backing Pod (Sandbox Ready observed generation %d)",
+			sandbox.Generation, ready.ObservedGeneration),
+		ObservedGeneration: claim.Generation,
+	}, true
 }
 
 func (r *SandboxClaimReconciler) computeAndSetStatus(claim *extensionsv1beta1.SandboxClaim, sandbox *v1beta1.Sandbox, err error, isClaimExpired bool) {
@@ -2553,7 +2594,9 @@ func sandboxTemplateCreatePredicate() predicate.Funcs {
 // hasSandboxExpiredCondition reads the Ready condition's Reason ==
 // SandboxReasonExpired — so expiry propagates to claims only because we DeepEqual
 // the entire Ready condition. Narrowing this to a Status-only compare would
-// silently stop expiry from reaching claims.
+// silently stop expiry from reaching claims. Claim readiness likewise depends
+// on the Ready condition's observedGeneration (sandboxUpdatePendingCondition):
+// after an adoption the only wake-up is the Sandbox controller advancing it.
 //
 // Invariant: this predicate deliberately drops all metadata- and spec-only
 // updates on owned Sandboxes (labels, annotations, generation). Nothing in the
