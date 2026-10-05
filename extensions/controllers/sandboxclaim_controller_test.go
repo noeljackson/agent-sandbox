@@ -7566,6 +7566,31 @@ func TestSandboxStatusRelevantChange(t *testing.T) {
 			expected: true,
 		},
 		{
+			// A claim adopted while the warm Sandbox reported Ready for its
+			// previous generation waits (SandboxUpdatePending) for the Sandbox
+			// controller to report Ready for the adopted generation. That
+			// update changes only the Ready condition's observedGeneration and
+			// must still wake the claim.
+			name: "Ready condition observedGeneration advanced, Status unchanged",
+			oldSb: &sandboxv1beta1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Status: sandboxv1beta1.SandboxStatus{
+					Conditions: []metav1.Condition{
+						{Type: string(sandboxv1beta1.SandboxConditionReady), Status: metav1.ConditionTrue, ObservedGeneration: 1},
+					},
+				},
+			},
+			newSb: &sandboxv1beta1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{Generation: 2},
+				Status: sandboxv1beta1.SandboxStatus{
+					Conditions: []metav1.Condition{
+						{Type: string(sandboxv1beta1.SandboxConditionReady), Status: metav1.ConditionTrue, ObservedGeneration: 2},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
 			// Expiry has no condition type of its own: hasSandboxExpiredCondition
 			// reads the Ready condition's Reason. Here Status stays False and only
 			// the Reason flips (SandboxNotReady -> SandboxExpired), so this must be
