@@ -1,0 +1,104 @@
+name: Sync Generated Main
+
+# Regenerate main from upstream + fork-overlay + PR_BRANCHES, then build its
+# controller image. A push runs only the workflows in the pushed commit, and
+# the pr/* branches stay upstream-based for upstream review, so they cannot
+# carry this file: a push to fork-overlay runs it at once, and the schedule
+# (from the default branch, the generated main) picks up pushes to tracked
+# branches. `gh workflow run sync-main.yml` runs it immediately.
+on:
+  push:
+    branches: [fork-overlay]
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Regenerate even when main already contains every input
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: fork-overlay
+          fetch-depth: 0
+
+      - id: plan
+        name: Find inputs that main does not contain yet
+        env:
+          FORCE: ${{ inputs.force && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          mapfile -t tracked < <(
+            sed -n '/^PR_BRANCHES=(/,/^)/p' scripts/sync-main.sh |
+              sed -e '1d;$d' -e 's/#.*//' | xargs -n1
+          )
+          missing=()
+          for branch in fork-overlay "${tracked[@]}"; do
+            git rev-parse --verify --quiet "origin/${branch}" >/dev/null ||
+              { echo "::error::tracked branch ${branch} does not exist"; exit 1; }
+            git merge-base --is-ancestor "origin/${branch}" origin/main ||
+              missing+=("${branch}")
+          done
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            echo "main is missing: ${missing[*]}"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$FORCE" == "true" ]]; then
+            echo "main contains every input; regenerating on request"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main contains fork-overlay and every tracked branch"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.plan.outputs.run == 'true'
+        name: Read upstream's Go version
+        run: |
+          git remote add upstream https://github.com/kubernetes-sigs/agent-sandbox.git
+          git fetch --no-tags upstream main
+          # setup-go parses module syntax only from a file named go.mod.
+          mkdir -p "$RUNNER_TEMP/upstream"
+          git show upstream/main:go.mod > "$RUNNER_TEMP/upstream/go.mod"
+
+      - if: steps.plan.outputs.run == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ runner.temp }}/upstream/go.mod
+          cache: false
+
+      - if: steps.plan.outputs.run == 'true'
+        id: push
+        name: Regenerate, verify and push main
+        run: |
+          set -euo pipefail
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          scripts/sync-main.sh --push
+          git fetch --no-tags origin main
+          echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.sha != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-controller.yml
+    with:
+      ref: ${{ needs.sync.outputs.sha }}
